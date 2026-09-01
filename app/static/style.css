@@ -226,6 +226,59 @@ svg.mini { width: 11px; height: 11px; vertical-align: -1px; margin-right: 3px; }
 .warnings ul { margin: 0; padding-left: 17px; }
 .warnings li + li { margin-top: 3px; }
 
+/* ── Modes ────────────────────────────────────────────────────────────── */
+
+body[data-mode="simple"] .pro-only { display: none !important; }
+
+.modes {
+  display: inline-flex; background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 999px; padding: 2px; gap: 2px;
+}
+.mode-btn {
+  font: inherit; font-size: 12.5px; cursor: pointer;
+  border: none; background: none; color: var(--muted);
+  padding: 4px 12px; border-radius: 999px;
+}
+.mode-btn:hover { color: var(--text); }
+.mode-btn[aria-pressed="true"] {
+  background: var(--accent); color: var(--accent-ink); font-weight: 600;
+}
+
+/* ── Command box ──────────────────────────────────────────────────────── */
+
+.cmd { display: flex; gap: 8px; align-items: center; }
+#command-input {
+  flex: 1 1 auto; min-width: 0; font-size: 14px; padding: 9px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.cmd-apply {
+  background: var(--accent); border-color: var(--accent);
+  color: var(--accent-ink); font-weight: 600;
+}
+.cmd-apply:hover { background: var(--accent); filter: brightness(1.08); }
+
+.cmd-result {
+  margin-top: 10px; padding: 9px 12px; border-radius: var(--r-sm);
+  font-size: 13px; background: var(--surface-2); border: 1px solid var(--line);
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+}
+.cmd-result.error { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
+.cmd-result .badge {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+  border-radius: 999px; padding: 2px 8px; flex: 0 0 auto;
+  background: var(--accent-soft); color: var(--accent);
+}
+.cmd-result .badge.ai { background: rgba(201, 139, 240, .16); color: #c98bf0; }
+
+.cmd-examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.cmd-example {
+  font: inherit; font-size: 12px; cursor: pointer;
+  background: none; border: 1px dashed var(--line-strong); color: var(--muted);
+  border-radius: 999px; padding: 3px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.cmd-example:hover { color: var(--text); border-color: var(--accent); border-style: solid; }
+
 /* ── Style palette ────────────────────────────────────────────────────── */
 
 .palette { display: flex; flex-wrap: wrap; gap: 7px; }

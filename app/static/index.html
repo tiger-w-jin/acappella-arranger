@@ -91,6 +91,10 @@
 
     <div class="tb-group tb-actions">
       <span id="sync-state" class="sync" data-state="idle"></span>
+      <div class="modes" role="group" aria-label="Editing mode">
+        <button type="button" id="mode-simple" class="mode-btn" aria-pressed="true">Simple</button>
+        <button type="button" id="mode-pro" class="mode-btn" aria-pressed="false">Pro</button>
+      </div>
       <a id="download-xml" class="btn" download>MusicXML</a>
       <a id="download-midi" class="btn" download>MIDI</a>
     </div>
@@ -102,13 +106,30 @@
     <section class="panel settings">
       <div class="controls">
         <label>Ensemble<select id="ensemble"></select></label>
-        <label>Transpose<select id="transpose"></select></label>
-        <label>Tempo<input type="number" id="tempo" min="20" max="300" step="1"></label>
-        <label class="checkbox inline">
+        <label class="pro-only">Transpose<select id="transpose"></select></label>
+        <label class="pro-only">Tempo<input type="number" id="tempo" min="20" max="300" step="1"></label>
+        <label class="checkbox inline pro-only">
           <input type="checkbox" id="include-lyrics" checked><span>Backing syllables</span>
         </label>
       </div>
       <div id="warnings" class="warnings" hidden></div>
+    </section>
+
+    <!-- Typed commands -->
+    <section class="panel pro-only" id="command-panel">
+      <div class="panel-head">
+        <h2>Type a command</h2>
+        <span class="muted" id="command-engine"></span>
+      </div>
+      <form class="cmd" id="command-form" autocomplete="off">
+        <input type="text" id="command-input" spellcheck="false"
+               placeholder="e.g. bars 9-16 barbershop, the rest chorale"
+               aria-label="Arrangement command">
+        <button type="submit" class="btn cmd-apply">Apply</button>
+        <button type="button" id="command-undo" class="btn small ghost" hidden>Undo</button>
+      </form>
+      <div id="command-result" class="cmd-result" hidden></div>
+      <div id="command-examples" class="cmd-examples"></div>
     </section>
 
     <!-- Style palette -->
@@ -134,7 +155,7 @@
     </section>
 
     <!-- Timeline -->
-    <section class="panel">
+    <section class="panel pro-only">
       <div class="panel-head">
         <h2>Bars</h2>
         <div class="sel-actions">
@@ -163,7 +184,7 @@
     <section class="panel score-panel">
       <div class="panel-head">
         <h2>Score</h2>
-        <p class="muted hint">Click any bar in the score to select it.</p>
+        <p class="muted hint pro-only">Click any bar in the score to select it.</p>
       </div>
       <div id="score-status" class="status" hidden></div>
       <div id="score-wrap">

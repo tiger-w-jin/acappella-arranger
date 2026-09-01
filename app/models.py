@@ -112,6 +112,25 @@ class ArrangeResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class CommandRequest(BaseModel):
+    session_id: str
+    text: str = Field(description="A typed instruction, e.g. 'bars 9-16 barbershop'.")
+    tempo: float | None = Field(
+        default=None, description="Current tempo, so 'faster' has something to work from."
+    )
+
+
+class CommandResponse(BaseModel):
+    understood: bool
+    source: str = Field(description="'rules' or 'llm' — which engine produced the plan.")
+    summary: str = Field(description="Human-readable account of what was applied.")
+    actions: list[dict] = Field(
+        default_factory=list, description="Edits to apply: style/ensemble/transpose/tempo."
+    )
+    unparsed: list[str] = Field(default_factory=list)
+    message: str | None = None
+
+
 class StyleInfo(BaseModel):
     id: str
     name: str

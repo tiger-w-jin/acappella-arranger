@@ -14,7 +14,9 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from . import llm
 from .analysis import BarHarmony, Segment, analyze, infer_harmony, parse_chord_symbol
+from .commands import examples as command_examples, parse_command
 from .export import to_midi_bytes, to_musicxml
 from .harmony.arranger import build_arrangement
 from .harmony.styles import DEFAULT_STYLE, ENSEMBLES, STYLES, get_ensemble
@@ -25,6 +27,8 @@ from .models import (
     ArrangeRequest,
     ArrangeResponse,
     BarAnalysis,
+    CommandRequest,
+    CommandResponse,
     EnsembleInfo,
     SourceScore,
     StyleInfo,
@@ -104,6 +108,8 @@ def catalog() -> dict:
             for ensemble in ENSEMBLES.values()
         ],
         "default_style": DEFAULT_STYLE,
+        "command_examples": command_examples(),
+        "llm_enabled": llm.is_available(),
         "accepted_score": sorted(SCORE_SUFFIXES),
         "accepted_audio": sorted(AUDIO_SUFFIXES),
     }
@@ -319,6 +325,37 @@ def arrange(request: ArrangeRequest) -> ArrangeResponse:
         key=arrangement.key.name,
         warnings=warnings + arrangement.warnings,
     )
+
+
+@app.post("/api/command", response_model=CommandResponse)
+def command(request: CommandRequest) -> CommandResponse:
+    """Interpret a typed instruction into a plan of edits the UI can apply.
+
+    The grammar answers first because it is exact and instant. Gemini is only
+    consulted for phrasing the grammar rejects, and only when a key is set.
+    """
+    session: Session | None = SESSIONS.fetch(request.session_id)
+    if session is None:
+        raise HTTPException(404, "Session expired. Please upload the file again.")
+
+    bar_count = len(session.source.bars)
+    tempo = request.tempo or session.source.tempo
+
+    plan = parse_command(request.text, bar_count, tempo)
+
+    if not plan.understood and llm.is_available():
+        fallback = llm.interpret(request.text, bar_count, tempo)
+        if fallback is not None:
+            plan = fallback
+
+    payload = plan.to_dict()
+    if not plan.understood:
+        payload["message"] = (
+            "I could not read that. Try something like \u201cbars 9-16 barbershop\u201d "
+            "or \u201cfirst 8 chorale, the rest gospel\u201d."
+            + ("" if llm.is_available() else " Set GEMINI_API_KEY to allow freer phrasing.")
+        )
+    return CommandResponse(**payload)
 
 
 @app.get("/api/preview/{style_id}.mid")

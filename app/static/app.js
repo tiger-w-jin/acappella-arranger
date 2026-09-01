@@ -29,8 +29,11 @@ const STYLE_COLOURS = {
 const FALLBACK_COLOUR = "#7d8496";
 
 const ARRANGE_DEBOUNCE_MS = 450;
+const MODE_KEY = "acappella.mode";
 
 const state = {
+  mode: "simple",       // "simple" | "pro"
+  undoSnapshot: null,   // restores the state before the last typed command
   catalog: null,
   session: null,
   /** @type {{index:number, chord:string, roman:string, melody:Array, style:string, chordOverride:string}[]} */
@@ -117,6 +120,7 @@ async function loadCatalog() {
     `Scores: ${state.catalog.accepted_score.join(" ")} · Audio: ${state.catalog.accepted_audio.join(" ")}`;
 
   renderPalette();
+  renderCommandExamples();
 }
 
 function renderPalette() {
@@ -125,14 +129,18 @@ function renderPalette() {
   const counts = new Map();
   for (const bar of state.bars) counts.set(bar.style, (counts.get(bar.style) || 0) + 1);
 
+  // In Simple mode the highlighted chip reflects the piece, not a click.
+  const uniform = counts.size === 1 ? [...counts.keys()][0] : null;
+  const highlighted = state.mode === "simple" ? uniform : state.activeStyle;
+
   for (const style of state.catalog.styles) {
     const chip = document.createElement("button");
     chip.type = "button";
-    chip.className = "style-chip" + (state.activeStyle === style.id ? " active" : "");
+    chip.className = "style-chip" + (highlighted === style.id ? " active" : "");
     chip.style.setProperty("--swatch", colourFor(style.id));
     chip.title = style.description;
     chip.setAttribute("role", "option");
-    chip.setAttribute("aria-selected", String(state.activeStyle === style.id));
+    chip.setAttribute("aria-selected", String(highlighted === style.id));
 
     const swatch = document.createElement("span");
     swatch.className = "swatch";
@@ -140,7 +148,7 @@ function renderPalette() {
     label.textContent = style.name;
     chip.append(swatch, label);
 
-    const used = counts.get(style.id);
+    const used = state.mode === "simple" ? 0 : counts.get(style.id);
     if (used) {
       const badge = document.createElement("span");
       badge.className = "count";
@@ -151,8 +159,11 @@ function renderPalette() {
     chip.addEventListener("click", () => {
       state.activeStyle = style.id;
       showStyleDetail(style);
-      if (state.selected.size) {
-        applyStyleToSelection(style.id);
+      if (state.mode === "simple") {
+        // Simple mode has no bar selection: a style applies to the whole piece.
+        applyStyleToBars(style.id, state.bars.map((b) => b.index));
+      } else if (state.selected.size) {
+        applyStyleToBars(style.id, [...state.selected]);
       } else {
         $("palette-hint").textContent = "Select bars below, then click a style to apply it.";
       }
@@ -452,9 +463,10 @@ function updateSelectionUi() {
   }
 }
 
-function applyStyleToSelection(styleId) {
-  if (!state.selected.size) return;
-  for (const index of state.selected) {
+function applyStyleToBars(styleId, indices) {
+  if (!indices.length) return;
+  for (const index of indices) {
+    if (!state.bars[index]) continue;
     state.bars[index].style = styleId;
     updateBarCell(index);
   }
@@ -618,7 +630,8 @@ function highlightBarInScore(index, playing) {
 
 function installScoreClick() {
   $("score").addEventListener("click", (event) => {
-    if (!state.measureRects.length) return;
+    // Simple mode has no bar selection to reveal, so clicking the score is inert.
+    if (state.mode !== "pro" || !state.measureRects.length) return;
     const score = $("score");
     const bounds = score.getBoundingClientRect();
     const x = event.clientX - bounds.left + score.scrollLeft - 6;
@@ -736,7 +749,175 @@ async function previewStyle(styleId) {
   }
 }
 
+
+// ─────────────────────────────────────────────────────────── modes ──
+
+/**
+ * Simple mode is the whole app minus the parts you only want when tuning:
+ * pick who is singing and one style, hear it, download it. Pro adds per-bar
+ * editing, chord overrides, transpose/tempo and the command box.
+ */
+function setMode(mode) {
+  state.mode = mode === "pro" ? "pro" : "simple";
+  document.body.dataset.mode = state.mode;
+  $("mode-simple").setAttribute("aria-pressed", String(state.mode === "simple"));
+  $("mode-pro").setAttribute("aria-pressed", String(state.mode === "pro"));
+  try { localStorage.setItem(MODE_KEY, state.mode); } catch { /* private mode */ }
+
+  $("palette-hint").textContent = state.mode === "simple"
+    ? "Pick one style for the whole piece."
+    : "Select bars below, then click a style to apply it.";
+
+  if (state.mode === "simple") {
+    // Leaving a selection behind would be invisible and would silently scope
+    // the next edit, so drop it on the way in.
+    state.selected.clear();
+    updateSelectionUi();
+  }
+  if (state.catalog) renderPalette();
+
+  // The score's width changes when panels appear or disappear.
+  if (state.osmd && !$("stage-work").hidden) {
+    requestAnimationFrame(() => {
+      state.osmd.render();
+      measureScoreBars();
+      $("score-highlight").hidden = true;
+    });
+  }
+}
+
+// ────────────────────────────────────────────────────────── command ──
+
+function snapshot() {
+  return {
+    bars: state.bars.map((b) => ({ style: b.style, chordOverride: b.chordOverride })),
+    ensemble: $("ensemble").value,
+    transpose: $("transpose").value,
+    tempo: $("tempo").value,
+  };
+}
+
+function restore(snap) {
+  if (!snap) return;
+  snap.bars.forEach((saved, index) => {
+    if (!state.bars[index]) return;
+    state.bars[index].style = saved.style;
+    state.bars[index].chordOverride = saved.chordOverride;
+    updateBarCell(index);
+  });
+  $("ensemble").value = snap.ensemble;
+  $("transpose").value = snap.transpose;
+  $("tempo").value = snap.tempo;
+  renderPalette();
+  updateSelectionUi();
+  scheduleArrange();
+}
+
+function applyPlan(plan) {
+  const touched = new Set();
+  for (const action of plan.actions) {
+    if (action.type === "style" && action.bars) {
+      for (const index of action.bars) {
+        if (!state.bars[index]) continue;
+        state.bars[index].style = action.style;
+        updateBarCell(index);
+        touched.add(index);
+      }
+    } else if (action.type === "ensemble") {
+      $("ensemble").value = action.value;
+    } else if (action.type === "transpose") {
+      $("transpose").value = String(action.value);
+    } else if (action.type === "tempo") {
+      $("tempo").value = String(action.value);
+    }
+  }
+  renderPalette();
+  scheduleArrange();
+  return touched;
+}
+
+async function runCommand(text) {
+  if (!text.trim() || !state.session) return;
+
+  const before = snapshot();
+  const result = $("command-result");
+  result.hidden = false;
+  result.className = "cmd-result";
+  result.textContent = "Working…";
+
+  let plan;
+  try {
+    plan = await api("/api/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: state.session.session_id,
+        text,
+        tempo: Number($("tempo").value) || null,
+      }),
+    });
+  } catch (error) {
+    result.className = "cmd-result error";
+    result.textContent = error.message;
+    return;
+  }
+
+  if (!plan.understood) {
+    result.className = "cmd-result error";
+    result.textContent = plan.message || "I could not read that.";
+    return;
+  }
+
+  state.undoSnapshot = before;
+  applyPlan(plan);
+
+  result.className = "cmd-result";
+  result.innerHTML = "";
+  const badge = document.createElement("span");
+  badge.className = "badge" + (plan.source === "llm" ? " ai" : "");
+  badge.textContent = plan.source === "llm" ? "AI" : "parsed";
+  const text_ = document.createElement("span");
+  text_.textContent = plan.summary;
+  result.append(badge, text_);
+  $("command-undo").hidden = false;
+  $("command-input").value = "";
+}
+
+function installCommandBox() {
+  $("command-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand($("command-input").value);
+  });
+
+  $("command-undo").addEventListener("click", () => {
+    restore(state.undoSnapshot);
+    state.undoSnapshot = null;
+    $("command-undo").hidden = true;
+    $("command-result").hidden = true;
+  });
+}
+
+function renderCommandExamples() {
+  const host = $("command-examples");
+  host.innerHTML = "";
+  for (const example of state.catalog.command_examples || []) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "cmd-example";
+    chip.textContent = example;
+    chip.addEventListener("click", () => {
+      $("command-input").value = example;
+      runCommand(example);
+    });
+    host.append(chip);
+  }
+  $("command-engine").textContent = state.catalog.llm_enabled
+    ? "Grammar first, AI for anything it cannot parse."
+    : "Understood by a built-in grammar — no AI needed.";
+}
+
 // ───────────────────────────────────────────────────────── wiring ──
+
 
 function installUpload() {
   const dropzone = $("dropzone");
@@ -787,6 +968,9 @@ function installControls() {
     $(id).addEventListener("change", () => scheduleArrange());
   }
 
+  $("mode-simple").addEventListener("click", () => setMode("simple"));
+  $("mode-pro").addEventListener("click", () => setMode("pro"));
+
   $("select-all").addEventListener("click", selectAll);
   $("select-none").addEventListener("click", () => {
     state.selected.clear();
@@ -794,7 +978,7 @@ function installControls() {
   });
 
   $("insp-style").addEventListener("change", (event) => {
-    applyStyleToSelection(event.target.value);
+    applyStyleToBars(event.target.value, [...state.selected]);
     const style = state.catalog.styles.find((s) => s.id === event.target.value);
     if (style) { state.activeStyle = style.id; showStyleDetail(style); renderPalette(); }
   });
@@ -836,8 +1020,13 @@ function installControls() {
 }
 
 function init() {
+  let saved = "simple";
+  try { saved = localStorage.getItem(MODE_KEY) || "simple"; } catch { /* private mode */ }
+  setMode(saved);
+
   installUpload();
   installControls();
+  installCommandBox();
   installTimelineSelection();
   installScoreClick();
   installTransport();

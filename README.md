@@ -49,7 +49,15 @@ tells you when a style asks for notes that part cannot sing.
 **Output.** MusicXML (opens in MuseScore, Sibelius, Finale, Dorico), MIDI, plus
 in-browser playback with a choir soundfont and an engraved score preview.
 
-## Working in the app
+## Two modes
+
+**Simple** is the default: choose who is singing and one style for the whole
+piece, listen, download. Nothing else is on screen.
+
+**Pro** adds everything below — per-bar styles, chord overrides, transpose,
+tempo, backing syllables, and the command box. The choice is remembered.
+
+## Working in Pro mode
 
 Bars live in a single horizontal strip rather than a stack of dropdowns, so a
 32-bar tune stays on one screen and its structure is visible at a glance: each
@@ -69,6 +77,42 @@ bar shows its melody contour, its chord, and a colour for its style.
 - **The score and the strip are linked**: during playback the current bar is
   highlighted in both, and clicking any bar in the engraved score selects it.
 - **Space** plays and stops.
+
+## Typing commands
+
+Pro mode has a command box that takes plain instructions:
+
+```
+bars 9-16 barbershop, the rest chorale
+first 8 chorale, the rest gospel
+everything except the last 4 doo-wop
+sing it as a barbershop quartet
+transpose up a tone and set tempo 120
+```
+
+It understands bar ranges (`bars 9-16`, `bars 9 to 16`, `bar 5`,
+`bars 1, 3 and 5`), `first`/`last N`, `all`, `the rest`, `except`, every style
+under several names (`bach`, `doowop`, `organum`, `crunchy`, …), ensembles,
+transpose (`up a tone`, `down a fifth`) and tempo (`120 bpm`, `faster`).
+Clauses combine with commas and semicolons. Whatever it does is echoed back in
+words and can be undone in one click.
+
+**This is a grammar, not a model.** For a language this shaped, a parser is the
+better engine: it is exact, runs in under a millisecond, needs no network or
+credentials, and — unlike a model — its behaviour is pinned down by tests. It
+is also honest about failure, saying it did not understand instead of guessing.
+
+**The LLM is an optional fallback**, used only for phrasing the grammar
+rejects, and only when `GEMINI_API_KEY` is set:
+
+```
+GEMINI_API_KEY=... ./run.sh      # optional; everything works without it
+```
+
+That path is for genuinely fuzzy requests ("build towards the end"). Its
+output is validated back through the same action types, so an invented style
+id or an out-of-range bar is discarded rather than applied, and any failure
+degrades to "I could not read that" rather than an error.
 
 ---
 
@@ -135,6 +179,8 @@ app/
   theory.py          pitch, chord, key primitives (pure ints, no music21)
   analysis.py        key detection, chord inference, chord-symbol parsing
   preview.py         the ii-V-I demo the style palette auditions
+  commands.py        the typed-command grammar
+  llm.py             optional Gemini fallback, off unless GEMINI_API_KEY is set
   ingest/
     score.py         MusicXML / MIDI / ABC parsing, bar layout
     audio.py         basic-pitch transcription and line cleanup
@@ -144,7 +190,7 @@ app/
     arranger.py      per-bar styles -> a complete multi-part arrangement
   export.py          music21 score -> MusicXML / MIDI
   static/            the web UI (no build step, vanilla JS)
-tests/               246 tests: pipeline, every style x ensemble, audio
+tests/               318 tests: pipeline, styles x ensembles, audio, commands
 samples/             a notated melody and a recording, used by the UI examples
 ```
 
@@ -160,7 +206,9 @@ put inside the voicing search's inner loop.
 Covers every style against every ensemble (rendering, no voice crossing, no
 out-of-range writing), key and chord analysis, chord-symbol round trips,
 transposition, MusicXML/MIDI export, style previews (including that no two
-styles render identically), and real transcription of a synthesised melody.
+styles render identically), real transcription of a synthesised melody, the
+command grammar, and the validation that stops a bad LLM response reaching the
+arranger.
 
 ## Known limits
 
