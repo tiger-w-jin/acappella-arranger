@@ -95,12 +95,17 @@ def parse_score_file(path: str, title_hint: str = "") -> SourceScore:
         if duration <= 0:
             continue
         lyric = element.lyric if getattr(element, "lyric", None) else None
+        # syllabic is what lets the written lyrics be rebuilt with their hyphens.
+        syllabic = None
+        if lyric and getattr(element, "lyrics", None):
+            syllabic = getattr(element.lyrics[0], "syllabic", None)
         events.append(
             MelodyNote(
                 pitch=pitch,
                 offset=_to_float(element.offset),
                 duration=duration,
                 lyric=lyric,
+                syllabic=syllabic,
             )
         )
 
@@ -206,6 +211,7 @@ def layout_bars(
                         offset=start,
                         duration=round(span, 6),
                         lyric=event.lyric if not is_continuation else None,
+                        syllabic=event.syllabic if not is_continuation else None,
                         tied_from_previous=is_continuation,
                     )
                 )

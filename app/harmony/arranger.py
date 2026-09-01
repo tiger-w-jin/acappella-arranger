@@ -43,6 +43,9 @@ class Arrangement:
     # Per bar: the chords sounding in it as (offset within the bar, ChordSpec),
     # so a bar that changes harmony mid-way gets both symbols in the right place.
     bar_chords: list[list[tuple[float, ChordSpec]]] = field(default_factory=list)
+    # One (bar index, syllable or None) per melody note, so the UI can show the
+    # alignment it actually produced rather than a second guess at it.
+    lyric_layout: list[tuple[int, str | None]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -317,6 +320,13 @@ def build_arrangement(
 
     warnings.extend(_range_warnings(parts, ensemble))
 
+    bounds = [(bar.offset, bar.length) for bar in score.bars]
+    lyric_layout = [
+        (_bar_index_at(bounds, event.offset), event.lyric)
+        for event in parts[ensemble.melody_index]
+        if event.pitch is not None
+    ]
+
     return Arrangement(
         parts=parts,
         ensemble=ensemble,
@@ -329,6 +339,7 @@ def build_arrangement(
         bar_symbols=symbols,
         bar_bounds=[(bar.offset, bar.length) for bar in score.bars],
         bar_chords=bar_chords,
+        lyric_layout=lyric_layout,
         warnings=warnings,
     )
 
@@ -379,6 +390,13 @@ def _melody_events(
             )
         )
     return events
+
+
+def _bar_index_at(bounds: list[tuple[float, float]], offset: float) -> int:
+    for index, (start, length) in enumerate(bounds):
+        if start - 1e-6 <= offset < start + length - 1e-6:
+            return index
+    return max(0, len(bounds) - 1)
 
 
 def _range_warnings(parts: list[list[VoiceEvent]], ensemble: Ensemble) -> list[str]:

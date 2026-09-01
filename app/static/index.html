@@ -199,15 +199,25 @@
           previous syllable over one more note.</p>
       </div>
       <textarea id="lyrics" rows="3" spellcheck="false"
-                placeholder="A-ma-zing grace how sweet the sound"
+                placeholder="Amazing grace how sweet the sound"
                 aria-label="Lyrics"></textarea>
+
+      <div class="lyric-tools">
+        <button type="button" id="hyphenate" class="btn small">Auto-hyphenate</button>
+        <select id="lyric-lang" aria-label="Hyphenation language"></select>
+        <span class="muted" id="lyric-count"></span>
+      </div>
+
       <label class="checkbox inline">
         <input type="checkbox" id="lyrics-all-voices">
         <span>Put the words under every part</span>
         <small>Otherwise only the melody carries them and the backing sings its
           style syllable. Words reach a backing part only where its chord lands
-          on a melody note.</small>
+          on a melody note. The MIDI lyric track always holds the melody words
+          alone, which is what karaoke players expect.</small>
       </label>
+
+      <div id="lyric-strip" class="lyric-strip" hidden aria-label="Syllable placement"></div>
     </section>
 
     <!-- Score -->

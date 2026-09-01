@@ -126,6 +126,13 @@ async function loadCatalog() {
   }
   transpose.value = "0";
 
+  const langs = $("lyric-lang");
+  langs.innerHTML = "";
+  for (const item of state.catalog.lyric_languages || [{ id: "en", name: "English" }]) {
+    langs.append(new Option(item.name, item.id));
+  }
+  langs.value = "en";
+
   $("accepted-types").textContent =
     `Scores: ${state.catalog.accepted_score.join(" ")} · Audio: ${state.catalog.accepted_audio.join(" ")}`;
 
@@ -262,6 +269,13 @@ function applyAnalysis(analysis) {
   $("piece-meta").textContent =
     `${source} · ${analysis.key} · ${analysis.time_signature} · ${analysis.bar_count} bars`;
   $("tempo").value = Math.round(analysis.tempo);
+
+  // Words the file already carried. Only prefill an empty box, so a new upload
+  // never overwrites lyrics that have been typed.
+  if (analysis.source_lyrics && !$("lyrics").value.trim()) {
+    $("lyrics").value = analysis.source_lyrics;
+  }
+  renderLyricStrip([]);
 
   const notices = [];
   if (analysis.transcription_note) notices.push(analysis.transcription_note);
@@ -562,6 +576,7 @@ async function runArrange() {
     $("download-xml").href = `/api/arrangement/${result.arrangement_id}.musicxml`;
     $("player").src = `/api/arrangement/${result.arrangement_id}.mid`;
 
+    renderLyricStrip(result.lyric_layout || []);
     computeBarTimes();
     await renderScore(result.musicxml);
     $("sync-state").dataset.state = "ok";
@@ -1039,7 +1054,86 @@ async function exportPdf() {
   }
 }
 
+
+// ────────────────────────────────────────────────────────── lyrics ──
+
+/**
+ * Show which syllable landed on which note, grouped by bar.
+ *
+ * Built from the arrangement the server actually produced rather than by
+ * re-running the syllable rules in JavaScript, so the strip can never disagree
+ * with the engraved score. The cost is that it refreshes with the debounced
+ * re-arrange rather than on every keystroke.
+ */
+function renderLyricStrip(layout) {
+  const host = $("lyric-strip");
+  const counter = $("lyric-count");
+
+  if (!layout.length) {
+    host.hidden = true;
+    counter.textContent = "";
+    return;
+  }
+
+  const sung = layout.filter(([, text]) => text).length;
+  counter.textContent = `${sung} of ${layout.length} notes have a word`;
+  counter.className = "muted" + (sung && sung < layout.length ? " short" : "");
+
+  if (!sung) {
+    host.hidden = true;
+    return;
+  }
+
+  host.hidden = false;
+  host.innerHTML = "";
+  let currentBar = null;
+  let cells = null;
+
+  for (const [barIndex, text] of layout) {
+    if (barIndex !== currentBar) {
+      currentBar = barIndex;
+      const group = document.createElement("div");
+      group.className = "ls-bar";
+      const label = document.createElement("div");
+      label.className = "ls-bar-num";
+      label.textContent = barIndex + 1;
+      cells = document.createElement("div");
+      cells.className = "ls-cells";
+      group.append(label, cells);
+      host.append(group);
+    }
+    const cell = document.createElement("span");
+    cell.className = "ls-cell" + (text ? "" : " empty");
+    cell.textContent = text || "\u00b7";
+    cells.append(cell);
+  }
+}
+
+async function hyphenateLyrics() {
+  const box = $("lyrics");
+  const text = box.value.trim();
+  if (!text) return;
+  const button = $("hyphenate");
+  button.disabled = true;
+  try {
+    const result = await api("/api/hyphenate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, lang: $("lyric-lang").value }),
+    });
+    if (result.text !== box.value) {
+      box.value = result.text;
+      scheduleArrange(0);
+    }
+  } catch (error) {
+    setStatus($("score-status"), error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 // ───────────────────────────────────────────────────────── wiring ──
+
 
 
 
@@ -1101,6 +1195,7 @@ function installControls() {
   }
 
   $("download-pdf").addEventListener("click", exportPdf);
+  $("hyphenate").addEventListener("click", hyphenateLyrics);
 
   let lyricsTimer = null;
   for (const id of ["lyrics", "lyrics-all-voices"]) {

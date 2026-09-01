@@ -50,7 +50,11 @@ def _key_signature(arrangement: Arrangement) -> m21key.Key:
     return m21key.Key(name, arrangement.key.mode)
 
 
-def build_music21_score(arrangement: Arrangement, with_chord_symbols: bool = True) -> stream.Score:
+def build_music21_score(
+    arrangement: Arrangement,
+    with_chord_symbols: bool = True,
+    lyrics_on_melody_only: bool = False,
+) -> stream.Score:
     score = stream.Score()
     score.insert(0, metadata.Metadata())
     score.metadata.title = arrangement.title
@@ -94,6 +98,7 @@ def build_music21_score(arrangement: Arrangement, with_chord_symbols: bool = Tru
                 bar_start,
                 bar_length,
                 arrangement.key,
+                with_lyrics=not lyrics_on_melody_only or is_melody,
             )
 
             if bar_index == len(arrangement.bar_bounds) - 1:
@@ -134,6 +139,7 @@ def _fill_measure(
     bar_start: float,
     bar_length: float,
     key: KeyContext,
+    with_lyrics: bool = True,
 ) -> None:
     cursor = bar_start
     for event in sorted(events, key=lambda e: e.offset):
@@ -146,7 +152,7 @@ def _fill_measure(
         if duration <= 1e-6:
             continue
         item = _make_note(event.pitch, duration, key)
-        if event.lyric:
+        if event.lyric and with_lyrics:
             # syllabic drives the hyphens joining a word split across notes.
             item.lyrics = [note.Lyric(text=event.lyric, syllabic=event.syllabic or "single")]
         if event.tied_from_previous:
@@ -187,7 +193,15 @@ def to_musicxml(arrangement: Arrangement) -> str:
 
 
 def to_midi_bytes(arrangement: Arrangement) -> bytes:
-    score = build_music21_score(arrangement, with_chord_symbols=False)
+    """MIDI, whose lyric track is conventionally the sung text and nothing else.
+
+    Backing syllables belong in the score but would mislead a karaoke player or
+    a DAW lyric view, so they are left out here even when the score shows words
+    on every part.
+    """
+    score = build_music21_score(
+        arrangement, with_chord_symbols=False, lyrics_on_melody_only=True
+    )
     from music21.midi.translate import streamToMidiFile
 
     midi_file = streamToMidiFile(score)

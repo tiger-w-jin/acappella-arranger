@@ -153,3 +153,158 @@ def test_no_lyrics_leaves_the_arrangement_untouched(analysed):
     source, key, harmony = analysed
     without = build_arrangement(source, key, harmony, get_ensemble("satb"), {})
     assert not any(e.syllabic for e in without.parts[0])
+
+
+# ── Rebuilding written lyrics (D) ─────────────────────────────────────────
+
+
+def test_rebuild_restores_hyphens():
+    from app.lyrics import rebuild
+    assert rebuild([("A", BEGIN), ("maz", MIDDLE), ("ing", END), ("grace", SINGLE)]) \
+        == "A-maz-ing grace"
+
+
+def test_rebuild_round_trips_through_musicxml(analysed):
+    """Words in an uploaded file must come back editable, hyphens intact."""
+    from music21 import converter, note as m21note
+
+    from app.lyrics import rebuild
+
+    source, key, harmony = analysed
+    written = "A-maz-ing grace how sweet"
+    xml = to_musicxml(
+        build_arrangement(source, key, harmony, get_ensemble("satb"), {}, lyrics=written)
+    )
+    reparsed = converter.parse(xml, format="musicxml")
+    pairs = [
+        (n.lyrics[0].text, n.lyrics[0].syllabic)
+        for n in reparsed.parts[0].recurse().notes
+        if isinstance(n, m21note.Note) and n.lyrics
+    ]
+    assert rebuild(pairs).startswith(written)
+
+
+def test_ingest_captures_syllabic(tmp_path, analysed):
+    from app.ingest.score import parse_score_file
+
+    source, key, harmony = analysed
+    xml = to_musicxml(
+        build_arrangement(source, key, harmony, get_ensemble("satb"), {},
+                          lyrics="A-maz-ing grace")
+    )
+    path = tmp_path / "with-lyrics.musicxml"
+    path.write_text(xml)
+    reloaded = parse_score_file(str(path))
+    carried = [(n.lyric, n.syllabic) for n in reloaded.all_notes if n.lyric]
+    assert carried[:3] == [("A", BEGIN), ("maz", MIDDLE), ("ing", END)]
+
+
+# ── Automatic hyphenation (A) ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("word,expected", [
+    ("amazing", "a-ma-zing"), ("twinkle", "twin-kle"), ("little", "lit-tle"),
+    ("above", "a-bove"), ("mercy", "mer-cy"), ("only", "on-ly"),
+    ("wonder", "won-der"), ("salvation", "sal-va-tion"),
+    ("hallelujah", "hal-le-lu-jah"), ("gentle", "gen-tle"), ("table", "ta-ble"),
+    # Single-syllable words and silent endings must be left alone.
+    ("grace", "grace"), ("sweet", "sweet"), ("sound", "sound"),
+    ("saved", "saved"), ("wretch", "wretch"),
+])
+def test_english_syllabification(word, expected):
+    from app.lyrics import syllabify_word
+    assert "-".join(syllabify_word(word)) == expected
+
+
+def test_auto_hyphenate_respects_manual_hyphens():
+    from app.lyrics import auto_hyphenate
+    assert auto_hyphenate("Twin-kle twinkle") == "Twin-kle twin-kle"
+
+
+def test_auto_hyphenate_leaves_the_melisma_marker_alone():
+    from app.lyrics import auto_hyphenate
+    assert auto_hyphenate("sound _ _") == "sound _ _"
+
+
+def test_auto_hyphenate_keeps_punctuation_and_case():
+    from app.lyrics import auto_hyphenate
+    assert auto_hyphenate('"Amazing grace," wonderful!') == '"A-ma-zing grace," won-der-ful!'
+
+
+def test_auto_hyphenate_handles_empty_input():
+    from app.lyrics import auto_hyphenate
+    assert auto_hyphenate("") == ""
+    assert auto_hyphenate("   ").strip() == ""
+
+
+def test_english_never_needs_pyphen(monkeypatch):
+    """English must work with the dependency absent, so a lean clone still runs."""
+    import builtins
+
+    from app.lyrics import auto_hyphenate
+
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == "pyphen":
+            raise ImportError("blocked for test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    assert auto_hyphenate("amazing grace") == "a-ma-zing grace"
+
+
+def test_available_languages_always_offers_english():
+    from app.lyrics import available_languages
+    assert available_languages()[0]["id"] == "en"
+
+
+# ── Alignment layout (B) ──────────────────────────────────────────────────
+
+
+def test_lyric_layout_has_one_entry_per_melody_note(analysed):
+    source, key, harmony = analysed
+    arrangement = build_arrangement(
+        source, key, harmony, get_ensemble("satb"), {}, lyrics="Twin-kle twin-kle",
+    )
+    melody = [e for e in arrangement.parts[0] if e.pitch is not None]
+    assert len(arrangement.lyric_layout) == len(melody)
+
+
+def test_lyric_layout_matches_the_melody_part(analysed):
+    """The strip is only trustworthy if it mirrors what is actually in the score."""
+    source, key, harmony = analysed
+    arrangement = build_arrangement(
+        source, key, harmony, get_ensemble("satb"), {}, lyrics="Twin-kle twin-kle lit-tle star",
+    )
+    from_part = [e.lyric for e in arrangement.parts[0] if e.pitch is not None]
+    from_layout = [text for _, text in arrangement.lyric_layout]
+    assert from_layout == from_part
+    assert [bar for bar, _ in arrangement.lyric_layout][:4] == [0, 0, 0, 0]
+
+
+# ── MIDI lyric track (J) ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("all_voices", [False, True])
+def test_midi_lyric_track_holds_only_the_melody_words(analysed, all_voices):
+    from app.export import to_midi_bytes
+
+    source, key, harmony = analysed
+    arrangement = build_arrangement(
+        source, key, harmony, get_ensemble("satb"), {},
+        lyrics="Twin-kle twin-kle lit-tle star",
+        lyrics_all_voices=all_voices,
+    )
+    midi = to_midi_bytes(arrangement)
+    assert midi.count(b"\xff\x05") == 7  # the sung syllables, not the backing "Ah"
+    assert b"Ah" not in midi
+
+
+def test_score_still_shows_backing_syllables(analysed):
+    """Trimming the MIDI lyric track must not strip the score's own syllables."""
+    source, key, harmony = analysed
+    xml = to_musicxml(build_arrangement(
+        source, key, harmony, get_ensemble("satb"), {}, lyrics="Twin-kle twin-kle",
+    ))
+    assert "<text>Ah</text>" in xml

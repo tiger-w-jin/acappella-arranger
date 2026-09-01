@@ -46,23 +46,43 @@ sings on:
 tenor sits *above* the lead. Each voice has a real range, and the arranger
 tells you when a style asks for notes that part cannot sing.
 
-**Lyrics.** Type the words and they land one syllable per note, with the
-hyphenation a vocal score needs. The convention is the usual one: a space
-starts a word, a hyphen splits a word across notes, `_` holds a syllable over
-one more note.
+**Lyrics.** Type the words in plain prose and press **Auto-hyphenate**:
 
 ```
-A-ma-zing grace how sweet the sound
+Amazing grace how sweet the sound   ->   A-ma-zing grace how sweet the sound
 ```
+
+The result lands in an editable box, because hyphenation is a first draft and
+not an oracle. You can also write the hyphens yourself — a space starts a word,
+a hyphen splits one across notes, a lone underscore holds a syllable over one
+more note — and a manual hyphen is never second-guessed.
+
+An **alignment strip** under the box shows which syllable landed on which note,
+grouped by bar, so a miscount is obvious without reading the engraved score. It
+is built from the arrangement the server actually produced rather than from a
+second copy of the rules in JavaScript, so it cannot disagree with the score.
+
+Lyrics already present in an uploaded MusicXML are loaded into the box with
+their hyphens intact, ready to edit rather than retype.
 
 By default only the melody carries the words and the backing sings its style
-syllable; one checkbox puts them under every part instead, which is what you
-want for homophonic writing. Words only reach a backing part where its chord
-actually lands on a melody note — a held pad cannot sing them — and any
-mismatch between syllables and notes is reported rather than hidden.
+syllable; one checkbox puts them under every part, which is what you want for
+homophonic writing. Words reach a backing part only where its chord lands on a
+melody note — a held pad cannot sing them — and any mismatch between syllables
+and notes is reported rather than hidden.
+
+*On the hyphenator:* English uses rules written for singing, not for
+typesetting. Hyphenation dictionaries exist to break words at line ends and
+deliberately leave `twinkle`, `little`, `above` and `mercy` whole, which is
+exactly wrong for a singer. `pyphen` covers the other languages in the dropdown,
+where it is far better than anything short enough to write by hand; it is
+optional, and English works without it.
 
 **Output.** MusicXML (opens in MuseScore, Sibelius, Finale, Dorico), MIDI, PDF,
 plus in-browser playback with a choir soundfont and an engraved score preview.
+All three carry the lyrics. The MIDI lyric track holds the melody words alone —
+backing syllables belong in the score but would mislead a karaoke player or a
+DAW lyric view.
 
 PDF is produced in the browser: no PDF engine is installed locally, so the
 score is re-engraved offscreen at A4 — OSMD paginates it properly instead of
@@ -201,7 +221,7 @@ app/
   theory.py          pitch, chord, key primitives (pure ints, no music21)
   analysis.py        key detection, chord inference, chord-symbol parsing
   preview.py         the ii-V-I demo the style palette auditions
-  lyrics.py          syllable parsing and fitting words to notes
+  lyrics.py          syllable parsing, English syllabification, fitting words to notes
   commands.py        the typed-command grammar
   llm.py             optional Gemini fallback, off unless GEMINI_API_KEY is set
   ingest/
@@ -213,7 +233,7 @@ app/
     arranger.py      per-bar styles -> a complete multi-part arrangement
   export.py          music21 score -> MusicXML / MIDI
   static/            the web UI (no build step, vanilla JS)
-tests/               334 tests: pipeline, styles x ensembles, audio, commands, lyrics
+tests/               364 tests: pipeline, styles x ensembles, audio, commands, lyrics
 samples/             a notated melody and a recording, used by the UI examples
 ```
 
@@ -230,8 +250,9 @@ Covers every style against every ensemble (rendering, no voice crossing, no
 out-of-range writing), key and chord analysis, chord-symbol round trips,
 transposition, MusicXML/MIDI export, style previews (including that no two
 styles render identically), real transcription of a synthesised melody, the
-command grammar, lyric parsing and placement, and the validation that stops a
-bad LLM response reaching the arranger.
+command grammar, lyric parsing, English syllabification, the alignment layout,
+the MIDI lyric track's contents, and the validation that stops a bad LLM
+response reaching the arranger.
 
 ## Known limits
 

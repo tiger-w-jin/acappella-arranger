@@ -29,10 +29,13 @@ from .models import (
     BarAnalysis,
     CommandRequest,
     CommandResponse,
+    HyphenateRequest,
+    HyphenateResponse,
     EnsembleInfo,
     SourceScore,
     StyleInfo,
 )
+from .lyrics import auto_hyphenate, available_languages, rebuild as rebuild_lyrics
 from .preview import preview_midi
 from .theory import KeyContext
 
@@ -109,6 +112,7 @@ def catalog() -> dict:
         ],
         "default_style": DEFAULT_STYLE,
         "command_examples": command_examples(),
+        "lyric_languages": available_languages(),
         "llm_enabled": llm.is_available(),
         "accepted_score": sorted(SCORE_SUFFIXES),
         "accepted_audio": sorted(AUDIO_SUFFIXES),
@@ -142,6 +146,14 @@ def _analysis_response(session_id: str, session: Session) -> AnalysisResponse:
             )
         )
 
+    # Words the file already carried, rebuilt with their hyphens so they can be
+    # edited rather than retyped.
+    written = rebuild_lyrics([
+        (note.lyric or "", note.syllabic)
+        for bar in source.bars for note in bar.notes
+        if note.pitch is not None and note.lyric
+    ])
+
     first = source.bars[0] if source.bars else None
     return AnalysisResponse(
         session_id=session_id,
@@ -153,6 +165,7 @@ def _analysis_response(session_id: str, session: Session) -> AnalysisResponse:
         time_signature=f"{first.beats}/{first.beat_type}" if first else "4/4",
         bar_count=len(source.bars),
         bars=bars,
+        source_lyrics=written or None,
         transcription_note=source.transcription_note,
     )
 
@@ -325,6 +338,7 @@ def arrange(request: ArrangeRequest) -> ArrangeResponse:
         voices=[voice.name for voice in ensemble.voices],
         ensemble=ensemble.id,
         key=arrangement.key.name,
+        lyric_layout=[[bar, text] for bar, text in arrangement.lyric_layout],
         warnings=warnings + arrangement.warnings,
     )
 
@@ -358,6 +372,12 @@ def command(request: CommandRequest) -> CommandResponse:
             + ("" if llm.is_available() else " Set GEMINI_API_KEY to allow freer phrasing.")
         )
     return CommandResponse(**payload)
+
+
+@app.post("/api/hyphenate", response_model=HyphenateResponse)
+def hyphenate(request: HyphenateRequest) -> HyphenateResponse:
+    """Split plain prose into sung syllables, leaving manual hyphens alone."""
+    return HyphenateResponse(text=auto_hyphenate(request.text, request.lang))
 
 
 @app.get("/api/preview/{style_id}.mid")

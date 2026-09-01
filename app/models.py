@@ -15,6 +15,7 @@ class MelodyNote:
     offset: float  # quarter lengths from the start of the piece
     duration: float
     lyric: str | None = None
+    syllabic: str | None = None  # begin/middle/end/single, for rebuilding hyphens
     tied_from_previous: bool = False  # continuation of a note split at a barline
 
     @property
@@ -78,6 +79,9 @@ class AnalysisResponse(BaseModel):
     time_signature: str
     bar_count: int
     bars: list[BarAnalysis]
+    source_lyrics: str | None = Field(
+        default=None, description="Lyrics the uploaded file already carried, ready to edit."
+    )
     transcription_note: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
@@ -119,6 +123,12 @@ class ArrangeResponse(BaseModel):
     voices: list[str]
     ensemble: str
     key: str
+    lyric_layout: list[list] = Field(
+        default_factory=list,
+        description="One [bar_index, syllable_or_null] per melody note, for the "
+                    "alignment strip. Derived from the arrangement itself, so it "
+                    "cannot disagree with the score.",
+    )
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -139,6 +149,15 @@ class CommandResponse(BaseModel):
     )
     unparsed: list[str] = Field(default_factory=list)
     message: str | None = None
+
+
+class HyphenateRequest(BaseModel):
+    text: str
+    lang: str = "en"
+
+
+class HyphenateResponse(BaseModel):
+    text: str
 
 
 class StyleInfo(BaseModel):

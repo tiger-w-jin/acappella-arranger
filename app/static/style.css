@@ -119,6 +119,29 @@ p { margin: 0; }
 #lyrics:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 #lyrics-panel .checkbox { margin-top: 10px; align-items: start; }
 
+/* ── Lyric tools and alignment strip ──────────────────────────────────── */
+
+.lyric-tools { display: flex; align-items: center; gap: 9px; margin-top: 9px; flex-wrap: wrap; }
+.lyric-tools select { font-size: 12.5px; padding: 5px 8px; }
+#lyric-count { font-size: 12px; }
+#lyric-count.short { color: var(--warn); }
+
+.lyric-strip {
+  display: flex; gap: 10px; overflow-x: auto;
+  margin-top: 12px; padding: 9px 2px 10px;
+  border-top: 1px solid var(--line);
+  scrollbar-width: thin;
+}
+.ls-bar { display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; }
+.ls-bar-num { font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.ls-cells { display: flex; gap: 3px; }
+.ls-cell {
+  min-width: 26px; padding: 3px 6px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 4px; font-size: 11.5px; text-align: center; white-space: nowrap;
+}
+.ls-cell.empty { color: var(--faint); border-style: dashed; background: none; }
+
 /* ── Toolbar ──────────────────────────────────────────────────────────── */
 
 .toolbar {
