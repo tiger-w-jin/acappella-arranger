@@ -39,10 +39,16 @@ const PDF_SCRIPTS = [
   "https://cdn.jsdelivr.net/npm/svg2pdf.js@2.2.3/dist/svg2pdf.umd.min.js",
 ];
 const MODE_KEY = "acappella.mode";
+const PROJECT_KEY = "acappella.project";
+const AUTOSAVE_MS = 1200;
 
 const state = {
   mode: "simple",       // "simple" | "pro"
   pendingAudio: null,   // audio file waiting on its transcription settings
+  soloVoice: null,      // voice index currently soloed for playback
+  arrangementId: null,
+  voices: [],
+  autosaveTimer: null,
   undoSnapshot: null,   // restores the state before the last typed command
   catalog: null,
   session: null,
@@ -236,6 +242,7 @@ async function uploadFile(file) {
   form.append("beat_type", beatType);
   form.append("chords_per_bar", $("chords-per-bar").value);
   form.append("merge_repeats", $("merge-repeats").checked ? "true" : "false");
+  form.append("harmony_source", $("reinfer").checked ? "infer" : "auto");
 
   try {
     applyAnalysis(await api("/api/upload", { method: "POST", body: form }));
@@ -270,11 +277,10 @@ function applyAnalysis(analysis) {
     `${source} · ${analysis.key} · ${analysis.time_signature} · ${analysis.bar_count} bars`;
   $("tempo").value = Math.round(analysis.tempo);
 
-  // Words the file already carried. Only prefill an empty box, so a new upload
-  // never overwrites lyrics that have been typed.
-  if (analysis.source_lyrics && !$("lyrics").value.trim()) {
-    $("lyrics").value = analysis.source_lyrics;
-  }
+  // Lyrics belong to the piece that was loaded, so a different piece starts
+  // clean rather than inheriting words that no longer fit its melody.
+  // loadProject() puts saved lyrics back after this runs.
+  $("lyrics").value = analysis.source_lyrics || "";
   renderLyricStrip([]);
 
   const notices = [];
@@ -284,6 +290,10 @@ function applyAnalysis(analysis) {
   state.activeStyle = state.catalog.default_style;
   const first = state.catalog.styles.find((s) => s.id === state.activeStyle);
   if (first) showStyleDetail(first);
+
+  showHarmonySource(analysis);
+  state.soloVoice = null;
+  renderParts([]);
 
   $("stage-upload").hidden = true;
   $("stage-work").hidden = false;
@@ -518,6 +528,7 @@ function applyStyleToBars(styleId, indices) {
   }
   renderPalette();
   scheduleArrange();
+  autosave();
 }
 
 // ──────────────────────────────────────────────────────── arrange ──
@@ -572,9 +583,14 @@ async function runArrange() {
     notices.push(...result.warnings);
     showWarnings(notices);
 
+    state.arrangementId = result.arrangement_id;
     $("download-midi").href = `/api/arrangement/${result.arrangement_id}.mid`;
     $("download-xml").href = `/api/arrangement/${result.arrangement_id}.musicxml`;
-    $("player").src = `/api/arrangement/${result.arrangement_id}.mid`;
+    $("player").src = state.soloVoice === null
+      ? `/api/arrangement/${result.arrangement_id}.mid`
+      : `/api/arrangement/${result.arrangement_id}/practice/${state.soloVoice}.mid`;
+    renderParts(result.voices || []);
+    autosave();
 
     renderLyricStrip(result.lyric_layout || []);
     computeBarTimes();
@@ -1132,7 +1148,265 @@ async function hyphenateLyrics() {
   }
 }
 
+
+// ─────────────────────────────────────────────────────── harmony ──
+
+function showHarmonySource(analysis) {
+  const chip = $("harmony-source");
+  const wrap = $("reinfer-wrap");
+  const label = {
+    symbols: "Chords: the file's own chord symbols",
+    texture: "Chords: read from the file's parts",
+    inferred: "Chords: inferred from the melody",
+  }[analysis.harmony_source] || "";
+  chip.textContent = label;
+  chip.hidden = !label;
+  // Only offer to re-infer when there was something better to begin with.
+  wrap.hidden = analysis.harmony_source === "inferred";
+}
+
+// ──────────────────────────────────────────────────────────── fit ──
+
+async function runFit() {
+  const button = $("fit-button");
+  const host = $("fit-results");
+  if (!state.session) return;
+  button.disabled = true;
+  host.hidden = false;
+  host.innerHTML = '<div class="fit-option">Trying every ensemble and key…</div>';
+  try {
+    const result = await api("/api/fit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: state.session.session_id }),
+    });
+    host.innerHTML = "";
+    if (!result.options.length) {
+      host.innerHTML = '<div class="fit-option">No suggestions.</div>';
+      return;
+    }
+    for (const [index, option] of result.options.slice(0, 5).entries()) {
+      const row = document.createElement("div");
+      row.className = "fit-option" + (index === 0 ? " best" : "");
+      const text = document.createElement("span");
+      text.className = "grow";
+      text.textContent = option.summary;
+      const metric = document.createElement("span");
+      metric.className = "metric";
+      metric.textContent = `${option.out_of_range} outside · strain ${option.strain}`;
+      const apply = document.createElement("button");
+      apply.type = "button";
+      apply.className = "btn small";
+      apply.textContent = "Use this";
+      apply.addEventListener("click", () => {
+        $("ensemble").value = option.ensemble;
+        $("transpose").value = String(option.transpose);
+        host.hidden = true;
+        scheduleArrange(0);
+      });
+      row.append(text, metric, apply);
+      host.append(row);
+    }
+  } catch (error) {
+    host.innerHTML = "";
+    setStatus($("score-status"), error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// ────────────────────────────────────────────────────────── parts ──
+
+function renderParts(voices) {
+  state.voices = voices;
+  const host = $("parts-list");
+  host.innerHTML = "";
+
+  for (const [index, name] of voices.entries()) {
+    const row = document.createElement("div");
+    row.className = "part-row" + (state.soloVoice === index ? " soloed" : "");
+
+    const label = document.createElement("span");
+    label.className = "part-name";
+    label.textContent = name;
+
+    const solo = document.createElement("button");
+    solo.type = "button";
+    solo.className = "btn small" + (state.soloVoice === index ? "" : " ghost");
+    solo.textContent = state.soloVoice === index ? "Soloed" : "Solo";
+    solo.addEventListener("click", () => {
+      // Soloing swaps the player to that part's practice mix, so "solo" means
+      // the same thing you hear in the downloaded track.
+      state.soloVoice = state.soloVoice === index ? null : index;
+      applySoloToPlayer();
+      renderParts(voices);
+    });
+
+    const download = document.createElement("a");
+    download.className = "btn small";
+    download.textContent = "Practice track";
+    download.download = "";
+    download.href = state.arrangementId
+      ? `/api/arrangement/${state.arrangementId}/practice/${index}.mid` : "#";
+
+    row.append(label, solo, download);
+    host.append(row);
+  }
+
+  if (voices.length) {
+    const row = document.createElement("div");
+    row.className = "part-row";
+    const label = document.createElement("span");
+    label.className = "part-name muted";
+    label.textContent = "All parts, balanced";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn small" + (state.soloVoice === null ? "" : " ghost");
+    button.textContent = "Play all";
+    button.addEventListener("click", () => {
+      state.soloVoice = null;
+      applySoloToPlayer();
+      renderParts(voices);
+    });
+    row.append(label, button);
+    host.append(row);
+  }
+}
+
+function applySoloToPlayer() {
+  if (!state.arrangementId) return;
+  const wasPlaying = state.playing;
+  const at = $("player").currentTime || 0;
+  $("player").src = state.soloVoice === null
+    ? `/api/arrangement/${state.arrangementId}.mid`
+    : `/api/arrangement/${state.arrangementId}/practice/${state.soloVoice}.mid`;
+  if (wasPlaying) {
+    $("player").addEventListener("load", () => {
+      $("player").currentTime = at;
+      $("player").start();
+    }, { once: true });
+  }
+}
+
+// ─────────────────────────────────────────────────────── projects ──
+
+/**
+ * Everything needed to rebuild this arrangement without the original file.
+ *
+ * Sessions live in the server's memory, so without this a page reload loses
+ * the upload and every per-bar choice made since.
+ */
+function projectPayload() {
+  if (!state.session) return null;
+  return {
+    v: 1,
+    title: state.session.title,
+    source_kind: state.session.source_kind,
+    tempo: Number($("tempo").value) || state.session.tempo,
+    key: state.session.key,
+    bars: state.session.bars.map((bar) => ({
+      beats: bar.beats,
+      beat_type: bar.beat_type,
+      length: bar.beats * (4 / bar.beat_type),
+      melody: bar.melody,
+      chord: bar.chord,
+      roman: bar.roman,
+    })),
+    settings: {
+      ensemble: $("ensemble").value,
+      transpose: $("transpose").value,
+      tempo: $("tempo").value,
+      includeLyrics: $("include-lyrics").checked,
+      lyrics: $("lyrics").value,
+      lyricsAllVoices: $("lyrics-all-voices").checked,
+      styles: state.bars.map((b) => b.style),
+      chordOverrides: state.bars.map((b) => b.chordOverride),
+    },
+  };
+}
+
+function autosave() {
+  clearTimeout(state.autosaveTimer);
+  state.autosaveTimer = setTimeout(() => {
+    const payload = projectPayload();
+    if (!payload) return;
+    try {
+      localStorage.setItem(PROJECT_KEY, JSON.stringify({ saved: Date.now(), payload }));
+    } catch { /* quota or private mode; autosave is a convenience, not a promise */ }
+  }, AUTOSAVE_MS);
+}
+
+async function loadProject(payload) {
+  const analysis = await api("/api/restore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: payload.title,
+      source_kind: payload.source_kind,
+      tempo: payload.tempo,
+      bars: payload.bars,
+    }),
+  });
+  applyAnalysis(analysis);
+
+  const saved = payload.settings || {};
+  if (saved.ensemble) $("ensemble").value = saved.ensemble;
+  if (saved.transpose !== undefined) $("transpose").value = saved.transpose;
+  if (saved.tempo) $("tempo").value = saved.tempo;
+  if (saved.includeLyrics !== undefined) $("include-lyrics").checked = saved.includeLyrics;
+  if (saved.lyrics !== undefined) $("lyrics").value = saved.lyrics;
+  if (saved.lyricsAllVoices !== undefined) $("lyrics-all-voices").checked = saved.lyricsAllVoices;
+  state.bars.forEach((bar, index) => {
+    if (saved.styles?.[index]) bar.style = saved.styles[index];
+    if (saved.chordOverrides?.[index]) bar.chordOverride = saved.chordOverrides[index];
+    updateBarCell(index);
+  });
+  renderPalette();
+  scheduleArrange(0);
+}
+
+function offerRestore() {
+  let stored = null;
+  try { stored = JSON.parse(localStorage.getItem(PROJECT_KEY) || "null"); } catch { stored = null; }
+  if (!stored?.payload?.bars?.length) return;
+
+  const when = new Date(stored.saved);
+  const banner = $("restore-banner");
+  $("restore-text").textContent =
+    `“${stored.payload.title}” from ${when.toLocaleString()} — ${stored.payload.bars.length} bars.`;
+  banner.hidden = false;
+
+  $("restore-yes").addEventListener("click", async () => {
+    banner.hidden = true;
+    setStatus($("upload-status"), "Restoring…");
+    try {
+      await loadProject(stored.payload);
+      setStatus($("upload-status"), "");
+    } catch (error) {
+      setStatus($("upload-status"), error.message, "error");
+    }
+  }, { once: true });
+
+  $("restore-no").addEventListener("click", () => {
+    banner.hidden = true;
+    try { localStorage.removeItem(PROJECT_KEY); } catch { /* nothing to do */ }
+  }, { once: true });
+}
+
+function saveProjectFile() {
+  const payload = projectPayload();
+  if (!payload) return;
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${(payload.title || "arrangement").replace(/[^\w \-]/g, "_")}.acappella.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 // ───────────────────────────────────────────────────────── wiring ──
+
 
 
 
@@ -1191,10 +1465,53 @@ function installControls() {
   });
 
   for (const id of ["ensemble", "transpose", "tempo", "include-lyrics"]) {
-    $(id).addEventListener("change", () => scheduleArrange());
+    $(id).addEventListener("change", () => { scheduleArrange(); autosave(); });
   }
 
   $("download-pdf").addEventListener("click", exportPdf);
+  $("fit-button").addEventListener("click", runFit);
+  $("save-project").addEventListener("click", saveProjectFile);
+  $("open-project").addEventListener("click", () => $("project-input").click());
+
+  $("project-input").addEventListener("change", async () => {
+    const file = $("project-input").files[0];
+    $("project-input").value = "";
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text());
+      if (!payload?.bars?.length) throw new Error("that file has no bars in it");
+      await loadProject(payload);
+    } catch (error) {
+      setStatus($("upload-status"), `Could not open that project: ${error.message}`, "error");
+      $("stage-work").hidden = true;
+      $("stage-upload").hidden = false;
+    }
+  });
+
+  // Re-inferring changes the analysis, so it has to go back to the server.
+  $("reinfer").addEventListener("change", async () => {
+    if (!state.session) return;
+    $("sync-state").dataset.state = "working";
+    const form = new FormData();
+    form.append("session_id", state.session.session_id);
+    form.append("chords_per_bar", $("chords-per-bar").value);
+    form.append("harmony_source", $("reinfer").checked ? "infer" : "auto");
+    try {
+      const analysis = await api("/api/reanalyze", { method: "POST", body: form });
+      state.session = analysis;
+      showHarmonySource(analysis);
+      analysis.bars.forEach((bar, index) => {
+        if (!state.bars[index]) return;
+        state.bars[index].chord = bar.chord;
+        state.bars[index].roman = bar.roman;
+        updateBarCell(index);
+      });
+      updateSelectionUi();
+      scheduleArrange(0);
+    } catch (error) {
+      setStatus($("score-status"), error.message, "error");
+    }
+  });
   $("hyphenate").addEventListener("click", hyphenateLyrics);
 
   let lyricsTimer = null;
@@ -1215,9 +1532,11 @@ function installControls() {
     const form = new FormData();
     form.append("session_id", state.session.session_id);
     form.append("chords_per_bar", $("chords-per-bar").value);
+    form.append("harmony_source", $("reinfer").checked ? "infer" : "auto");
     try {
       const analysis = await api("/api/reanalyze", { method: "POST", body: form });
       state.session = analysis;
+      showHarmonySource(analysis);
       analysis.bars.forEach((bar, index) => {
         if (!state.bars[index]) return;
         state.bars[index].chord = bar.chord;
@@ -1297,6 +1616,7 @@ function init() {
   installTimelineSelection();
   installScoreClick();
   installTransport();
+  offerRestore();
   loadCatalog().catch((error) =>
     setStatus($("upload-status"), `Could not start up: ${error.message}`, "error"));
 }

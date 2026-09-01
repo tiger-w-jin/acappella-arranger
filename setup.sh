@@ -10,7 +10,7 @@ python3 -m venv .venv
 .venv/bin/pip install \
   fastapi "uvicorn[standard]" python-multipart \
   music21 pretty_midi numpy librosa soundfile \
-  onnxruntime mir_eval resampy pytest pyphen
+  onnxruntime mir_eval resampy pytest pyphen httpx
 
 # basic-pitch declares tensorflow<2.15.1, which has no wheel for Python 3.11+.
 # The wheel ships an ONNX copy of the model, and onnxruntime (installed above)

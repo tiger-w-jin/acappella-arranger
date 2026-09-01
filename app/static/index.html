@@ -29,7 +29,8 @@
     <p class="examples muted">
       Or try
       <button type="button" class="link" data-example="twinkle.musicxml">a short melody</button>,
-      <button type="button" class="link" data-example="long_tune.musicxml">a 32-bar tune</button>, or
+      <button type="button" class="link" data-example="long_tune.musicxml">a 32-bar tune</button>,
+      <button type="button" class="link" data-example="chorale_satb.musicxml">a four-part chorale</button>, or
       <button type="button" class="link" data-example="twinkle_sung.wav">a recording</button>.
     </p>
 
@@ -62,6 +63,12 @@
         <button type="button" id="transcribe" class="btn cmd-apply">Transcribe</button>
         <button type="button" id="cancel-audio" class="btn small ghost">Choose another file</button>
       </div>
+    </div>
+
+    <div id="restore-banner" class="restore-banner" hidden>
+      <span id="restore-text"></span>
+      <button type="button" id="restore-yes" class="btn small">Restore it</button>
+      <button type="button" id="restore-no" class="btn small ghost">Discard</button>
     </div>
 
     <div id="upload-status" class="status" hidden></div>
@@ -98,6 +105,9 @@
         <button type="button" id="mode-simple" class="mode-btn" aria-pressed="true">Simple</button>
         <button type="button" id="mode-pro" class="mode-btn" aria-pressed="false">Pro</button>
       </div>
+      <button type="button" id="save-project" class="btn" title="Save this arrangement to a file">Save</button>
+      <button type="button" id="open-project" class="btn" title="Open a saved arrangement">Open</button>
+      <input type="file" id="project-input" accept=".json,application/json" hidden>
       <button type="button" id="download-pdf" class="btn">PDF</button>
       <a id="download-xml" class="btn" download>MusicXML</a>
       <a id="download-midi" class="btn" download>MIDI</a>
@@ -116,13 +126,33 @@
           <select id="chords-per-bar">
             <option value="1">1 — slow harmony</option>
             <option value="2" selected>2 — recommended</option>
+            <option value="3">3 — for 3/4 and 6/8</option>
+            <option value="4">4 — one per beat</option>
           </select>
         </label>
         <label class="checkbox inline pro-only">
           <input type="checkbox" id="include-lyrics" checked><span>Backing syllables</span>
         </label>
       </div>
+      <div class="settings-row">
+        <span class="chip" id="harmony-source" hidden></span>
+        <label class="checkbox inline pro-only" id="reinfer-wrap" hidden>
+          <input type="checkbox" id="reinfer"><span>Re-infer chords from the melody</span>
+        </label>
+        <button type="button" id="fit-button" class="btn small pro-only">Fit to my singers</button>
+      </div>
+      <div id="fit-results" class="fit-results" hidden></div>
       <div id="warnings" class="warnings" hidden></div>
+    </section>
+
+    <!-- Parts: practice tracks -->
+    <section class="panel pro-only" id="parts-panel">
+      <div class="panel-head">
+        <h2>Parts</h2>
+        <p class="muted hint">Solo a part to hear it brought forward against the others,
+          or download it as a practice track to learn from.</p>
+      </div>
+      <div id="parts-list" class="parts-list"></div>
     </section>
 
     <!-- Typed commands -->

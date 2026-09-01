@@ -8,6 +8,7 @@ from fractions import Fraction
 from music21 import chord, converter, meter, note, stream, tempo
 
 from ..models import Bar, MelodyNote, SourceScore
+from .harmony_source import has_multiple_parts, read_chord_symbols, read_texture
 
 SCORE_SUFFIXES = {".xml", ".musicxml", ".mxl", ".mid", ".midi", ".abc", ".krn"}
 
@@ -94,11 +95,15 @@ def parse_score_file(path: str, title_hint: str = "") -> SourceScore:
         duration = _to_float(element.duration.quarterLength)
         if duration <= 0:
             continue
-        lyric = element.lyric if getattr(element, "lyric", None) else None
-        # syllabic is what lets the written lyrics be rebuilt with their hyphens.
+        # Take the first verse only. A score with several verses stacks a
+        # Lyric per verse on each note, and music21's `.lyric` joins them with
+        # newlines -- which would interleave the verses into nonsense.
+        lyric = None
         syllabic = None
-        if lyric and getattr(element, "lyrics", None):
-            syllabic = getattr(element.lyrics[0], "syllabic", None)
+        lines = getattr(element, "lyrics", None) or []
+        if lines:
+            lyric = (lines[0].text or "").strip() or None
+            syllabic = getattr(lines[0], "syllabic", None)
         events.append(
             MelodyNote(
                 pitch=pitch,
@@ -120,8 +125,15 @@ def parse_score_file(path: str, title_hint: str = "") -> SourceScore:
     pickup = _detect_pickup(melody_part, bar_quarters)
     bars = layout_bars(events, bar_quarters, time_sig.numerator, time_sig.denominator, pickup)
 
+    # What the file says about its own harmony, in order of how much it is worth
+    # believing: written chord symbols first, then the real multi-part texture.
+    source_chords = read_chord_symbols(score)
+    texture = [] if source_chords else read_texture(score, bar_quarters / 2)
+
     return SourceScore(
         bars=bars,
+        source_chords=source_chords,
+        texture=texture,
         tempo=bpm,
         title=title,
         source_kind="midi" if path.lower().endswith((".mid", ".midi")) else "score",

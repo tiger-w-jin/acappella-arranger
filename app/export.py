@@ -50,10 +50,17 @@ def _key_signature(arrangement: Arrangement) -> m21key.Key:
     return m21key.Key(name, arrangement.key.mode)
 
 
+# Velocities for a practice track: loud enough to pick your line out, quiet
+# enough to still hear how it fits against the others.
+PRACTICE_FOREGROUND = 112
+PRACTICE_BACKGROUND = 42
+
+
 def build_music21_score(
     arrangement: Arrangement,
     with_chord_symbols: bool = True,
     lyrics_on_melody_only: bool = False,
+    practice_voice: int | None = None,
 ) -> stream.Score:
     score = stream.Score()
     score.insert(0, metadata.Metadata())
@@ -76,6 +83,11 @@ def build_music21_score(
 
         events = arrangement.parts[voice_index]
         is_melody = voice_index == arrangement.ensemble.melody_index
+        velocity = None
+        if practice_voice is not None:
+            velocity = (
+                PRACTICE_FOREGROUND if voice_index == practice_voice else PRACTICE_BACKGROUND
+            )
 
         for bar_index, (bar_start, bar_length) in enumerate(arrangement.bar_bounds):
             measure = stream.Measure(number=bar_index + 1)
@@ -99,6 +111,7 @@ def build_music21_score(
                 bar_length,
                 arrangement.key,
                 with_lyrics=not lyrics_on_melody_only or is_melody,
+                velocity=velocity,
             )
 
             if bar_index == len(arrangement.bar_bounds) - 1:
@@ -140,6 +153,7 @@ def _fill_measure(
     bar_length: float,
     key: KeyContext,
     with_lyrics: bool = True,
+    velocity: int | None = None,
 ) -> None:
     cursor = bar_start
     for event in sorted(events, key=lambda e: e.offset):
@@ -155,6 +169,8 @@ def _fill_measure(
         if event.lyric and with_lyrics:
             # syllabic drives the hyphens joining a word split across notes.
             item.lyrics = [note.Lyric(text=event.lyric, syllabic=event.syllabic or "single")]
+        if velocity is not None:
+            item.volume.velocity = velocity
         if event.tied_from_previous:
             item.tie = tie.Tie("stop")
         measure.insert(event.offset - bar_start, item)
@@ -190,6 +206,23 @@ def to_musicxml(arrangement: Arrangement) -> str:
 
     raw = GeneralObjectExporter().parse(score)
     return raw.decode("utf-8")
+
+
+def to_practice_midi(arrangement: Arrangement, voice_index: int) -> bytes:
+    """MIDI with one part brought forward, for learning that line.
+
+    Choirs learn from part-dominant recordings, so the other voices stay
+    audible rather than being muted -- you need to hear how your line sits.
+    """
+    from music21.midi.translate import streamToMidiFile
+
+    score = build_music21_score(
+        arrangement,
+        with_chord_symbols=False,
+        lyrics_on_melody_only=True,
+        practice_voice=voice_index,
+    )
+    return streamToMidiFile(score).writestr()
 
 
 def to_midi_bytes(arrangement: Arrangement) -> bytes:

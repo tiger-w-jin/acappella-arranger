@@ -94,7 +94,8 @@ def test_underscore_leaves_a_note_blank():
 @pytest.fixture(scope="module")
 def analysed():
     source = parse_score_file(str(SAMPLE))
-    return (source, *analyze(source))
+    key, harmony, _ = analyze(source)
+    return (source, key, harmony)
 
 
 def test_words_reach_the_melody_part(analysed):
@@ -308,3 +309,23 @@ def test_score_still_shows_backing_syllables(analysed):
         source, key, harmony, get_ensemble("satb"), {}, lyrics="Twin-kle twin-kle",
     ))
     assert "<text>Ah</text>" in xml
+
+
+def test_a_multi_verse_score_yields_one_readable_verse():
+    """Several verses must not be interleaved into a single mangled line.
+
+    music21 stacks one Lyric per verse on each note and its `.lyric` shortcut
+    joins them with newlines, which silently produced "Wer / den nur / wird
+    den" — verse one and verse two zipped together.
+    """
+    from app.ingest.score import parse_score_file
+    from app.lyrics import rebuild
+
+    chorale = Path(__file__).resolve().parents[1] / "samples" / "chorale_satb.musicxml"
+    source = parse_score_file(str(chorale))
+    words = rebuild([(n.lyric or "", n.syllabic) for n in source.all_notes if n.lyric])
+
+    assert "\n" not in words
+    assert words.startswith("Wer nur den lie-ben Gott")
+    # Every syllable belongs to exactly one verse.
+    assert all("\n" not in (n.lyric or "") for n in source.all_notes)

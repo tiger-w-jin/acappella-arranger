@@ -46,7 +46,8 @@ def source():
 
 @pytest.fixture(scope="module")
 def analysis(source):
-    return analyze(source)
+    key, harmony, _ = analyze(source)
+    return (key, harmony)
 
 
 def test_score_parses_into_bars(source):
@@ -185,7 +186,7 @@ def test_triple_metre_is_not_split_mid_bar(tmp_path):
     source = parse_score_file(_write_waltz(tmp_path))
     assert all(bar.beats == 3 and bar.length == 3.0 for bar in source.bars)
 
-    _, harmony = analyze(source, chords_per_bar=2)
+    _, harmony, _ = analyze(source, chords_per_bar=2)
     assert all(len(bar.segments) == 1 for bar in harmony)
 
 
@@ -201,8 +202,8 @@ def test_midi_input_matches_musicxml_input(tmp_path):
     from_midi = parse_score_file(midi_path)
 
     assert [n.pitch for n in from_xml.all_notes] == [n.pitch for n in from_midi.all_notes]
-    key_xml, harmony_xml = analyze(from_xml)
-    key_midi, harmony_midi = analyze(from_midi)
+    key_xml, harmony_xml, _ = analyze(from_xml)
+    key_midi, harmony_midi, _ = analyze(from_midi)
     assert key_xml.name == key_midi.name
     assert [b.symbol for b in harmony_xml] == [b.symbol for b in harmony_midi]
 

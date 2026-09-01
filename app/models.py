@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel, Field
 
+DEFAULT_STYLE_ID = "satb_chorale"
+
 
 @dataclass
 class MelodyNote:
@@ -44,6 +46,9 @@ class SourceScore:
     pickup_quarters: float = 0.0
     notes_dropped: int = 0
     transcription_note: str | None = None
+    # Harmony the file stated outright, rather than something inferred from it.
+    source_chords: list = field(default_factory=list)   # list[SourceChord]
+    texture: list = field(default_factory=list)         # list[Sonority]
 
     @property
     def all_notes(self) -> list[MelodyNote]:
@@ -79,6 +84,11 @@ class AnalysisResponse(BaseModel):
     time_signature: str
     bar_count: int
     bars: list[BarAnalysis]
+    harmony_source: str = Field(
+        default="inferred",
+        description="Where the chords came from: 'symbols' (the file's own chord "
+                    "symbols), 'texture' (read off its parts), or 'inferred'.",
+    )
     source_lyrics: str | None = Field(
         default=None, description="Lyrics the uploaded file already carried, ready to edit."
     )
@@ -149,6 +159,51 @@ class CommandResponse(BaseModel):
     )
     unparsed: list[str] = Field(default_factory=list)
     message: str | None = None
+
+
+class FitRequest(BaseModel):
+    session_id: str
+    ensembles: list[str] | None = Field(
+        default=None, description="Ensembles to consider; all of them when omitted."
+    )
+    keep_key: bool = Field(default=False, description="Only consider the original key.")
+    default_style: str = DEFAULT_STYLE_ID
+
+
+class FitOption(BaseModel):
+    ensemble: str
+    ensemble_name: str
+    transpose: int
+    out_of_range: int
+    strain: float
+    score: float
+    key: str
+    summary: str
+
+
+class FitResponse(BaseModel):
+    best: FitOption | None
+    options: list[FitOption] = Field(default_factory=list)
+    current: FitOption | None = None
+
+
+class ProjectBar(BaseModel):
+    beats: int
+    beat_type: int
+    length: float
+    melody: list[list[float | None]]
+    chord: str
+    roman: str
+
+
+class RestoreRequest(BaseModel):
+    """Enough of a project to rebuild a session without the original file."""
+
+    title: str = "Restored project"
+    source_kind: str = "score"
+    tempo: float = 96.0
+    key: str | None = None
+    bars: list[ProjectBar]
 
 
 class HyphenateRequest(BaseModel):

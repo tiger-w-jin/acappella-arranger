@@ -26,3 +26,4 @@ pyphen
 
 # Tests
 pytest
+httpx          # FastAPI's TestClient

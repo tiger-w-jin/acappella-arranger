@@ -11,8 +11,9 @@ cadence two bars later.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from .ingest.harmony_source import Sonority, SourceChord
 from .models import Bar, SourceScore
 from .theory import (
     CHORD_QUALITIES,
@@ -243,8 +244,15 @@ class _Span:
 def _build_spans(score: SourceScore, chords_per_bar: int) -> list[_Span]:
     spans: list[_Span] = []
     for bar in score.bars:
-        # Never subdivide a short bar (3/4, 6/8, or an anacrusis).
-        divisions = chords_per_bar if bar.length >= 4.0 - 1e-6 else 1
+        # At most one chord per beat, and only where the beats divide evenly:
+        # two chords in a 3/4 bar would fall across the beat rather than on it,
+        # so triple metre gets one chord or three, never two.
+        beats = max(1, int(round(bar.length)))
+        divisions = 1
+        for candidate in range(min(chords_per_bar, beats), 0, -1):
+            if beats % candidate == 0:
+                divisions = candidate
+                break
         length = bar.length / divisions
         for step in range(divisions):
             spans.append(
@@ -286,6 +294,50 @@ def _emission(span: _Span, chord: ChordSpec, prior: float) -> float:
     return 2.2 * (total / weighted_duration) + prior * 1.0
 
 
+def _emission_from_texture(
+    span: _Span, sonorities: list[Sonority], chord: ChordSpec, prior: float
+) -> float:
+    """How well a chord explains everything sounding, not just the tune.
+
+    When a file has real parts, the whole texture is evidence and the bass is
+    the strongest single clue to the root, so both are used instead of guessing
+    from the melody line alone.
+    """
+    span_end = span.start + span.duration
+    total = 0.0
+    weight_sum = 0.0
+    bass_votes: dict[int, float] = {}
+
+    for sonority in sonorities:
+        overlap = min(sonority.offset + sonority.duration, span_end) - max(sonority.offset, span.start)
+        if overlap <= 1e-6:
+            continue
+        share = overlap / max(sonority.duration, 1e-6)
+        for pc, weight in sonority.weights.items():
+            scaled = weight * share
+            weight_sum += scaled
+            interval = chord.tone_for_pc(pc)
+            total += scaled * (_TONE_FIT.get(interval, 0.85) if interval is not None else -1.25)
+        if sonority.bass_pc is not None:
+            bass_votes[sonority.bass_pc] = bass_votes.get(sonority.bass_pc, 0.0) + overlap
+
+    if weight_sum <= 0:
+        return prior * 0.5
+
+    score = 2.2 * (total / weight_sum) + prior * 1.0
+
+    if bass_votes:
+        bass_pc = max(bass_votes, key=lambda pc: bass_votes[pc])
+        interval = chord.tone_for_pc(bass_pc)
+        if bass_pc == chord.root_pc:
+            score += 0.8
+        elif interval is not None:
+            score += 0.1          # an inversion, still consistent
+        else:
+            score -= 0.5          # the bass contradicts the chord
+    return score
+
+
 def _transition(
     previous: ChordSpec, nxt: ChordSpec, key: KeyContext, within_bar: bool = False
 ) -> float:
@@ -320,20 +372,27 @@ def infer_harmony(
     if not score.bars:
         return []
 
-    spans = _build_spans(score, max(1, min(2, chords_per_bar)))
+    texture: list[Sonority] = list(score.texture or [])
+    emit = (
+        (lambda span, chord, prior: _emission_from_texture(span, texture, chord, prior))
+        if texture
+        else (lambda span, chord, prior: _emission(span, chord, prior))
+    )
+
+    spans = _build_spans(score, max(1, min(4, chords_per_bar)))
     candidates = candidate_chords(key)
     n_states = len(candidates)
     transition_weight = 0.35
 
     scores = [
-        _emission(spans[0], chord, prior) + (0.6 if chord.root_pc == key.tonic_pc else 0.0)
+        emit(spans[0], chord, prior) + (0.6 if chord.root_pc == key.tonic_pc else 0.0)
         for chord, prior in candidates
     ]
     backpointers: list[list[int]] = []
 
     for position, span in enumerate(spans[1:], start=1):
         within_bar = span.bar_index == spans[position - 1].bar_index
-        emissions = [_emission(span, chord, prior) for chord, prior in candidates]
+        emissions = [emit(span, chord, prior) for chord, prior in candidates]
         transitions = [
             [
                 transition_weight
@@ -406,11 +465,76 @@ def _merge_repeats(bars: list[BarHarmony]) -> list[BarHarmony]:
     return bars
 
 
+def harmony_from_symbols(
+    score: SourceScore, key: KeyContext, symbols: list[SourceChord]
+) -> list[BarHarmony]:
+    """Use chord symbols the file states outright, with no second-guessing."""
+    result: list[BarHarmony] = []
+    for bar in score.bars:
+        bar_end = bar.offset + bar.length
+        inside = [
+            item for item in symbols
+            if item.offset < bar_end - 1e-6 and item.offset + item.duration > bar.offset + 1e-6
+        ]
+        if not inside:
+            # No symbol reaches this bar; carry the last one, as a reader would.
+            earlier = [item for item in symbols if item.offset <= bar.offset + 1e-6]
+            inside = earlier[-1:] if earlier else []
+        if not inside:
+            continue
+
+        segments = []
+        for index, item in enumerate(inside):
+            start = max(bar.offset, item.offset) if index else bar.offset
+            end = bar_end if index == len(inside) - 1 else max(bar.offset, inside[index + 1].offset)
+            if end - start <= 1e-6:
+                continue
+            segments.append(
+                Segment(
+                    bar_index=bar.index,
+                    start=start,
+                    duration=end - start,
+                    chord=item.chord,
+                    roman=roman_for(item.chord, key),
+                    symbol=item.chord.symbol(key.prefer_flats),
+                )
+            )
+        if segments:
+            result.append(BarHarmony(index=bar.index, segments=segments))
+
+    return result if len(result) == len(score.bars) else []
+
+
+def texture_pitch_weights(score: SourceScore) -> dict[int, float]:
+    weights: dict[int, float] = {}
+    for sonority in score.texture or []:
+        for pc, weight in sonority.weights.items():
+            weights[pc] = weights.get(pc, 0.0) + weight
+    return weights
+
+
 def analyze(
-    score: SourceScore, chords_per_bar: int = 2
-) -> tuple[KeyContext, list[BarHarmony]]:
-    key = detect_key(pitch_class_weights(score))
-    return key, infer_harmony(score, key, chords_per_bar)
+    score: SourceScore, chords_per_bar: int = 2, harmony_source: str = "auto"
+) -> tuple[KeyContext, list[BarHarmony], str]:
+    """Key and chords, preferring harmony the file states over harmony guessed.
+
+    Returns the source actually used, so the UI can say where the chords came
+    from rather than leaving the user to wonder.
+    """
+    # The full texture is a better key witness than the melody alone.
+    weights = texture_pitch_weights(score) if score.texture else {}
+    key = detect_key(weights or pitch_class_weights(score))
+
+    if harmony_source != "infer" and score.source_chords:
+        from_symbols = harmony_from_symbols(score, key, score.source_chords)
+        if from_symbols:
+            return key, from_symbols, "symbols"
+
+    used = "texture" if (harmony_source != "infer" and score.texture) else "inferred"
+    if harmony_source == "infer":
+        plain = replace(score, texture=[])
+        return key, infer_harmony(plain, key, chords_per_bar), "inferred"
+    return key, infer_harmony(score, key, chords_per_bar), used
 
 
 # --------------------------------------------------------------------------

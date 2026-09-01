@@ -21,6 +21,21 @@ Everything runs locally. No audio, score or arrangement leaves the machine.
 [basic-pitch](https://github.com/spotify/basic-pitch), beat-tracked with
 librosa, and quantized onto a bar grid. From there both paths are identical.
 
+**It reads the harmony a file already has.** A lead sheet states its chords and
+a hymn or chorale states them in four parts, so guessing them back from the
+melody would be throwing away the answer and getting a different one. Chord
+symbols are believed outright; a multi-part score has its chords read off the
+real texture, weighted by how long each note sounds and by the bass, which is
+the strongest single clue to a root. Only a single line — a melody, or anything
+from audio — falls back to inference, where it is the only option. The UI says
+which of the three was used, and you can force a re-inference to reharmonise a
+hymn on purpose.
+
+Measured against music21's own analysis of five Bach chorales, reading the
+parts lifts root accuracy from **51% to 57%** over 184 chord spans; on BWV 324
+it is 50% to 83%. It is not uniformly better — BWV 281 goes the other way — but
+it wins on average and it is exact whenever chord symbols are present.
+
 **Per-bar harmony styles.** Bar 1 can be a Bach chorale, bar 2 barbershop, and
 bar 3 a gospel pad. Thirteen styles ship, differing in the colour tones they
 add, how widely they voice, what rhythm the backing sings, and the syllable it
@@ -45,6 +60,16 @@ sings on:
 **Six ensembles.** SATB, SAB, SSAA, TTBB, SSATB, and a barbershop quartet whose
 tenor sits *above* the lead. Each voice has a real range, and the arranger
 tells you when a style asks for notes that part cannot sing.
+
+**Fit to my singers** goes further than the warning: it tries every ensemble
+against every key and ranks them by how singable the result is, counting notes
+outside a part's range and how hard the rest push toward the edges. A
+materially easier key wins, but a negligible gain will not reprint everyone's
+music — staying put breaks the tie.
+
+**Practice tracks.** Solo any part to hear it brought forward against the
+others, or download it as a MIDI to learn from. The other voices stay audible
+rather than muted, because you need to hear how your line sits.
 
 **Lyrics.** Type the words in plain prose and press **Auto-hyphenate**:
 
@@ -77,6 +102,11 @@ deliberately leave `twinkle`, `little`, `above` and `mercy` whole, which is
 exactly wrong for a singer. `pyphen` covers the other languages in the dropdown,
 where it is far better than anything short enough to write by hand; it is
 optional, and English works without it.
+
+**Your work survives a reload.** The arrangement autosaves locally and offers
+to restore itself, and **Save** / **Open** write it out as a small `.json` you
+can keep or share. Sessions live in the server's memory, so without this a
+refresh meant re-uploading the file and redoing every choice.
 
 **Output.** MusicXML (opens in MuseScore, Sibelius, Finale, Dorico), MIDI, PDF,
 plus in-browser playback with a choir soundfont and an engraved score preview.
@@ -220,21 +250,23 @@ app/
   models.py          internal score representation + API schemas
   theory.py          pitch, chord, key primitives (pure ints, no music21)
   analysis.py        key detection, chord inference, chord-symbol parsing
-  preview.py         the ii-V-I demo the style palette auditions
-  lyrics.py          syllable parsing, English syllabification, fitting words to notes
   commands.py        the typed-command grammar
   llm.py             optional Gemini fallback, off unless GEMINI_API_KEY is set
+  lyrics.py          syllable parsing, English syllabification, fitting words to notes
+  fit.py             ranking ensembles and keys by how singable they are
+  preview.py         the ii-V-I demo the style palette auditions
+  export.py          music21 score -> MusicXML / MIDI / practice tracks
   ingest/
     score.py         MusicXML / MIDI / ABC parsing, bar layout
     audio.py         basic-pitch transcription and line cleanup
+    harmony_source.py  chord symbols and multi-part texture read from the file
   harmony/
     styles.py        ensembles, voice ranges, the style catalogue
     voicing.py       the voicing search and the non-search generators
     arranger.py      per-bar styles -> a complete multi-part arrangement
-  export.py          music21 score -> MusicXML / MIDI
   static/            the web UI (no build step, vanilla JS)
-tests/               364 tests: pipeline, styles x ensembles, audio, commands, lyrics
-samples/             a notated melody and a recording, used by the UI examples
+tests/               390 tests: pipeline, styles x ensembles, audio, commands, lyrics, sources
+samples/             a melody, a 32-bar tune, a four-part chorale and a recording
 ```
 
 `theory.py` deliberately holds no music21 objects — they are far too slow to

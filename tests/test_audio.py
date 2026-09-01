@@ -79,7 +79,7 @@ def test_transcription_recovers_the_melody(sung_wav):
 
 def test_transcribed_audio_analyses_to_the_right_key(sung_wav):
     source = transcribe_audio(sung_wav)
-    key, harmony = analyze(source)
+    key, harmony, _ = analyze(source)
 
     assert key.name == "C major"
     assert harmony[0].segments[0].chord.root_pc == 0  # opens on the tonic
