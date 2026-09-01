@@ -21,10 +21,10 @@ Everything runs locally. No audio, score or arrangement leaves the machine.
 [basic-pitch](https://github.com/spotify/basic-pitch), beat-tracked with
 librosa, and quantized onto a bar grid. From there both paths are identical.
 
-**Per-bar harmony styles.** Every bar has its own style dropdown, so bar 1 can
-be a Bach chorale, bar 2 barbershop, and bar 3 a gospel pad. Thirteen styles
-ship, differing in the colour tones they add, how widely they voice, what
-rhythm the backing sings, and the syllable it sings on:
+**Per-bar harmony styles.** Bar 1 can be a Bach chorale, bar 2 barbershop, and
+bar 3 a gospel pad. Thirteen styles ship, differing in the colour tones they
+add, how widely they voice, what rhythm the backing sings, and the syllable it
+sings on:
 
 | Style | Character |
 |---|---|
@@ -48,6 +48,27 @@ tells you when a style asks for notes that part cannot sing.
 
 **Output.** MusicXML (opens in MuseScore, Sibelius, Finale, Dorico), MIDI, plus
 in-browser playback with a choir soundfont and an engraved score preview.
+
+## Working in the app
+
+Bars live in a single horizontal strip rather than a stack of dropdowns, so a
+32-bar tune stays on one screen and its structure is visible at a glance: each
+bar shows its melody contour, its chord, and a colour for its style.
+
+- **Select** by clicking a bar, dragging across a range, shift-clicking to
+  extend, or ctrl/cmd-clicking to add one. `Select all` does the obvious thing.
+- **Apply** a style by clicking it in the palette — it lands on the selection
+  immediately. The palette shows how many bars use each style.
+- **Hear a style** before committing with *Hear it*, which plays the same
+  three-bar ii-V-I rendered in that style, so the difference is audible rather
+  than described.
+- **Override a chord** for the selected bar by typing a symbol (`Fmaj7`, `Ab`,
+  `G7sus4`, `C/G`). Overridden bars are marked with `*`.
+- **Everything re-arranges automatically**, debounced, with in-flight requests
+  cancelled so only the newest result is applied. There is no generate button.
+- **The score and the strip are linked**: during playback the current bar is
+  highlighted in both, and clicking any bar in the engraved score selects it.
+- **Space** plays and stops.
 
 ---
 
@@ -113,6 +134,7 @@ app/
   models.py          internal score representation + API schemas
   theory.py          pitch, chord, key primitives (pure ints, no music21)
   analysis.py        key detection, chord inference, chord-symbol parsing
+  preview.py         the ii-V-I demo the style palette auditions
   ingest/
     score.py         MusicXML / MIDI / ABC parsing, bar layout
     audio.py         basic-pitch transcription and line cleanup
@@ -122,7 +144,7 @@ app/
     arranger.py      per-bar styles -> a complete multi-part arrangement
   export.py          music21 score -> MusicXML / MIDI
   static/            the web UI (no build step, vanilla JS)
-tests/               232 tests: pipeline, every style x ensemble, audio
+tests/               246 tests: pipeline, every style x ensemble, audio
 samples/             a notated melody and a recording, used by the UI examples
 ```
 
@@ -137,8 +159,8 @@ put inside the voicing search's inner loop.
 
 Covers every style against every ensemble (rendering, no voice crossing, no
 out-of-range writing), key and chord analysis, chord-symbol round trips,
-transposition, MusicXML/MIDI export, and real transcription of a synthesised
-melody.
+transposition, MusicXML/MIDI export, style previews (including that no two
+styles render identically), and real transcription of a synthesised melody.
 
 ## Known limits
 

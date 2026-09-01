@@ -8,27 +8,28 @@
 </head>
 <body>
 
-<header>
-  <h1>A Cappella Arranger</h1>
-  <p class="tagline">Upload a score or a recording, choose a harmony style for every bar, and export a singable arrangement.</p>
-</header>
-
-<main>
-
-  <!-- Step 1: upload -->
-  <section id="upload-panel" class="card">
-    <h2><span class="step">1</span> Upload a piece</h2>
+<!-- ── Upload ─────────────────────────────────────────────────────────── -->
+<section id="stage-upload">
+  <div class="hero">
+    <h1>A Cappella Arranger</h1>
+    <p class="lede">Turn a melody into a singable arrangement. Upload a score or a
+      recording, then give every bar its own harmony style.</p>
 
     <div id="dropzone" tabindex="0" role="button" aria-label="Choose or drop a file">
+      <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 16V4m0 0L8 8m4-4 4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+              fill="none" stroke="currentColor" stroke-width="1.6"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
       <strong>Drop a file here, or click to browse</strong>
-      <span class="hint" id="accepted-types">Scores: MusicXML, MIDI, ABC &nbsp;·&nbsp; Audio: WAV, MP3, FLAC, M4A, OGG</span>
+      <span class="muted" id="accepted-types"></span>
       <input type="file" id="file-input" hidden>
     </div>
 
-    <p class="hint examples">
-      No file handy? Try
-      <button type="button" class="link" data-example="twinkle.musicxml">a notated melody</button>
-      or
+    <p class="examples muted">
+      Or try
+      <button type="button" class="link" data-example="twinkle.musicxml">a short melody</button>,
+      <button type="button" class="link" data-example="long_tune.musicxml">a 32-bar tune</button>, or
       <button type="button" class="link" data-example="twinkle_sung.wav">a recording</button>.
     </p>
 
@@ -47,92 +48,138 @@
         </label>
         <label>Chords per bar
           <select id="chords-per-bar">
-            <option value="1">1 (slow harmony)</option>
-            <option value="2" selected>2 (recommended)</option>
+            <option value="1">1 — slow harmony</option>
+            <option value="2" selected>2 — recommended</option>
           </select>
           <small>How often the harmony may change.</small>
         </label>
         <label class="checkbox">
           <input type="checkbox" id="merge-repeats" checked>
           <span>Merge repeated notes</span>
-          <small>Audio only. Fixes notes split into fragments; turn off if your melody really repeats notes.</small>
+          <small>Audio only. Fixes notes split into fragments.</small>
         </label>
       </div>
     </details>
 
     <div id="upload-status" class="status" hidden></div>
-  </section>
+    <div id="upload-progress" class="progress" hidden><div class="progress-bar"></div></div>
+  </div>
+</section>
 
-  <!-- Step 2: arrange -->
-  <section id="arrange-panel" class="card" hidden>
-    <h2><span class="step">2</span> Shape the arrangement</h2>
+<!-- ── Workspace ──────────────────────────────────────────────────────── -->
+<div id="stage-work" hidden>
 
-    <div id="summary" class="summary"></div>
-    <div id="transcription-note" class="note" hidden></div>
-
-    <div class="controls">
-      <label>Ensemble
-        <select id="ensemble"></select>
-      </label>
-      <label>Default style
-        <select id="default-style"></select>
-      </label>
-      <label>Transpose
-        <select id="transpose"></select>
-      </label>
-      <label>Tempo
-        <input type="number" id="tempo" min="20" max="300" step="1">
-      </label>
-      <label class="checkbox inline">
-        <input type="checkbox" id="include-lyrics" checked>
-        <span>Backing syllables</span>
-      </label>
+  <header class="toolbar">
+    <div class="tb-group tb-title">
+      <button type="button" id="back-to-upload" class="icon-btn" title="Load a different file" aria-label="Load a different file">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="tb-titletext">
+        <strong id="piece-title">—</strong>
+        <span class="muted" id="piece-meta"></span>
+      </div>
     </div>
 
-    <div class="bulk">
-      <span>Apply a style to</span>
-      <select id="bulk-style"></select>
-      <button type="button" id="apply-all" class="secondary">All bars</button>
-      <button type="button" id="apply-selected" class="secondary">Selected bars</button>
-      <button type="button" id="clear-selection" class="ghost">Clear selection</button>
+    <div class="tb-group tb-transport">
+      <button type="button" id="play" class="icon-btn primary" title="Play / stop (space)" aria-label="Play">
+        <svg id="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>
+        <svg id="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h3v14H8zM13 5h3v14h-3z" fill="currentColor"/></svg>
+      </button>
+      <span class="time" id="time-display">0:00</span>
+      <input type="range" id="seek" min="0" max="100" value="0" step="0.1" aria-label="Seek">
     </div>
 
-    <p class="hint">Click a bar to select it. Each bar keeps its own style and chord — that is what lets one section be a chorale and the next barbershop.</p>
-
-    <div id="bars" class="bars"></div>
-
-    <div class="actions">
-      <button type="button" id="arrange" class="primary">Create arrangement</button>
-      <span id="arrange-status" class="status inline-status" hidden></span>
+    <div class="tb-group tb-actions">
+      <span id="sync-state" class="sync" data-state="idle"></span>
+      <a id="download-xml" class="btn" download>MusicXML</a>
+      <a id="download-midi" class="btn" download>MIDI</a>
     </div>
-  </section>
+  </header>
 
-  <!-- Step 3: result -->
-  <section id="result-panel" class="card" hidden>
-    <h2><span class="step">3</span> Listen and export</h2>
+  <main class="workspace">
 
-    <div id="warnings" class="warnings" hidden></div>
+    <!-- Settings -->
+    <section class="panel settings">
+      <div class="controls">
+        <label>Ensemble<select id="ensemble"></select></label>
+        <label>Transpose<select id="transpose"></select></label>
+        <label>Tempo<input type="number" id="tempo" min="20" max="300" step="1"></label>
+        <label class="checkbox inline">
+          <input type="checkbox" id="include-lyrics" checked><span>Backing syllables</span>
+        </label>
+      </div>
+      <div id="warnings" class="warnings" hidden></div>
+    </section>
 
-    <div class="playback">
-      <midi-player id="player" sound-font="https://storage.googleapis.com/magentadata/js/soundfonts/sgm_plus" visualizer="#viz"></midi-player>
-      <midi-visualizer id="viz" type="piano-roll"></midi-visualizer>
-    </div>
+    <!-- Style palette -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Harmony styles</h2>
+        <p class="muted" id="palette-hint">Select bars below, then click a style to apply it.</p>
+      </div>
+      <div id="palette" class="palette" role="listbox" aria-label="Harmony styles"></div>
+      <div id="style-detail" class="style-detail" hidden>
+        <div class="sd-main">
+          <strong id="sd-name"></strong>
+          <p id="sd-description"></p>
+        </div>
+        <div class="sd-side">
+          <span class="pill" id="sd-syllable"></span>
+          <button type="button" id="sd-preview" class="btn small">
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="mini"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>
+            Hear it
+          </button>
+        </div>
+      </div>
+    </section>
 
-    <div class="actions">
-      <a id="download-xml" class="button primary" download>Download MusicXML</a>
-      <a id="download-midi" class="button secondary" download>Download MIDI</a>
-      <span class="hint">MusicXML opens in MuseScore, Sibelius, Finale or Dorico.</span>
-    </div>
+    <!-- Timeline -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Bars</h2>
+        <div class="sel-actions">
+          <span class="muted" id="selection-label">No bars selected</span>
+          <button type="button" id="select-all" class="btn small ghost">Select all</button>
+          <button type="button" id="select-none" class="btn small ghost">Clear</button>
+        </div>
+      </div>
+      <p class="muted hint">Click a bar, drag across several, or shift-click to extend. Each bar keeps its own style and chord.</p>
+      <div id="timeline" class="timeline" tabindex="0" role="listbox" aria-multiselectable="true" aria-label="Bars"></div>
 
-    <div id="score-status" class="status" hidden></div>
-    <div id="score"></div>
-  </section>
+      <div id="inspector" class="inspector" hidden>
+        <div class="insp-title" id="insp-title"></div>
+        <label>Style
+          <select id="insp-style"></select>
+        </label>
+        <label>Chord
+          <input type="text" id="insp-chord" placeholder="detected" spellcheck="false">
+          <small id="insp-chord-hint">e.g. Fmaj7, Ab, G7sus4, C/G</small>
+        </label>
+        <button type="button" id="insp-reset" class="btn small ghost">Reset chord</button>
+      </div>
+    </section>
 
-</main>
+    <!-- Score -->
+    <section class="panel score-panel">
+      <div class="panel-head">
+        <h2>Score</h2>
+        <p class="muted hint">Click any bar in the score to select it.</p>
+      </div>
+      <div id="score-status" class="status" hidden></div>
+      <div id="score-wrap">
+        <div id="score-highlight" hidden></div>
+        <div id="score"></div>
+      </div>
+    </section>
 
-<footer>
-  <span>Runs entirely on your machine. Nothing is uploaded anywhere.</span>
-</footer>
+  </main>
+</div>
+
+<!-- Hidden player: the toolbar transport drives it. -->
+<midi-player id="player" style="display:none"
+             sound-font="https://storage.googleapis.com/magentadata/js/soundfonts/sgm_plus"></midi-player>
+<midi-player id="preview-player" style="display:none"
+             sound-font="https://storage.googleapis.com/magentadata/js/soundfonts/sgm_plus"></midi-player>
 
 <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.7/build/opensheetmusicdisplay.min.js"></script>
 <script src="https://cdn.jsdelivr.net/combine/npm/tone@14.7.58,npm/@magenta/music@1.23.1/es6/core.js,npm/focus-visible@5,npm/html-midi-player@1.5.0"></script>

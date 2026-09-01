@@ -234,6 +234,22 @@ def test_chord_symbols_are_exportable():
         m21harmony.ChordSymbol(figure)  # raises if music21 cannot read it
 
 
+@pytest.mark.parametrize("style_id", sorted(STYLES))
+def test_style_preview_renders(style_id):
+    """The palette's 'hear it' demo must exist for every style."""
+    from app.preview import preview_midi
+
+    assert len(preview_midi(style_id, "satb")) > 100
+
+
+def test_style_previews_differ_between_styles():
+    """A preview is only useful if styles actually sound different."""
+    from app.preview import preview_midi
+
+    rendered = {style_id: preview_midi(style_id, "satb") for style_id in STYLES}
+    assert len(set(rendered.values())) == len(rendered), "some styles render identically"
+
+
 def test_chord_symbol_round_trip():
     for text, root, quality in [
         ("C", 0, "maj"), ("Am", 9, "min"), ("F#m7", 6, "min7"), ("Bb7", 10, "dom7"),

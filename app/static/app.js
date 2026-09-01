@@ -1,28 +1,73 @@
 "use strict";
 
-const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+/**
+ * A Cappella Arranger — UI.
+ *
+ * The editing loop is: select bars on the timeline, click a style, hear the
+ * result. Every change re-arranges automatically (debounced), so there is no
+ * "generate" button to forget to press.
+ */
+
+const NOTE_NAMES = ["C", "C\u266f", "D", "D\u266f", "E", "F", "F\u266f", "G", "G\u266f", "A", "A\u266f", "B"];
+
+// One hue per style, so the timeline shows the arrangement's shape at a glance.
+const STYLE_COLOURS = {
+  satb_chorale:  "#7c9cff",
+  hymn_open:     "#5fb2e8",
+  barbershop:    "#e8a33d",
+  jazz_close:    "#c98bf0",
+  gospel_pad:    "#f0785a",
+  doo_wop:       "#5fd0b0",
+  rhythmic_vamp: "#e86f9e",
+  cluster:       "#9d8cf5",
+  sus_air:       "#6fc6d8",
+  open_fifths:   "#a8b0c4",
+  pop_stack:     "#8fd35f",
+  drone:         "#b98a6a",
+  unison:        "#7d8496",
+};
+const FALLBACK_COLOUR = "#7d8496";
+
+const ARRANGE_DEBOUNCE_MS = 450;
 
 const state = {
   catalog: null,
   session: null,
-  bars: [],          // { index, chord, roman, melody, style, chordOverride }
+  /** @type {{index:number, chord:string, roman:string, melody:Array, style:string, chordOverride:string}[]} */
+  bars: [],
   selected: new Set(),
+  lastClickedBar: null,
+  activeStyle: null,
   osmd: null,
-  busy: false,
+  measureRects: [],     // pixel rect per bar in the rendered score
+  barTimes: [],         // {start, end} seconds per bar
+  arrangeTimer: null,
+  arrangeAbort: null,
+  arrangeSeq: 0,
+  playing: false,
+  duration: 0,
+  currentBar: -1,
 };
 
 const $ = (id) => document.getElementById(id);
+const colourFor = (styleId) => STYLE_COLOURS[styleId] || FALLBACK_COLOUR;
 
-function noteName(midi) {
-  if (midi === null || midi === undefined) return "–";
-  return NOTE_NAMES[((midi % 12) + 12) % 12] + (Math.floor(midi / 12) - 1);
+function styleName(styleId) {
+  const found = state.catalog?.styles.find((s) => s.id === styleId);
+  return found ? found.name : styleId;
 }
 
-function setStatus(element, message, kind = "") {
-  element.textContent = message;
-  element.className = "status" + (kind ? " " + kind : "") +
-    (element.id === "arrange-status" ? " inline-status" : "");
-  element.hidden = !message;
+function formatTime(seconds) {
+  if (!isFinite(seconds) || seconds < 0) seconds = 0;
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function setStatus(el, message, kind = "") {
+  el.textContent = message;
+  el.className = "status" + (kind ? ` ${kind}` : "");
+  el.hidden = !message;
 }
 
 async function api(path, options) {
@@ -31,16 +76,14 @@ async function api(path, options) {
     let detail = `${response.status} ${response.statusText}`;
     try {
       const body = await response.json();
-      if (body && body.detail) detail = body.detail;
-    } catch (_) { /* response had no JSON body */ }
+      if (body?.detail) detail = body.detail;
+    } catch { /* no JSON body */ }
     throw new Error(detail);
   }
   return response.json();
 }
 
-// ---------------------------------------------------------------------------
-// Catalog
-// ---------------------------------------------------------------------------
+// ───────────────────────────────────────────────────────── catalog ──
 
 async function loadCatalog() {
   state.catalog = await api("/api/catalog");
@@ -48,51 +91,92 @@ async function loadCatalog() {
   const ensemble = $("ensemble");
   ensemble.innerHTML = "";
   for (const item of state.catalog.ensembles) {
-    const option = document.createElement("option");
-    option.value = item.id;
-    option.textContent = `${item.name} — melody in ${item.melody_voice}`;
-    ensemble.append(option);
+    ensemble.append(new Option(`${item.name} — melody in ${item.melody_voice}`, item.id));
   }
   ensemble.value = "satb";
 
-  for (const select of [$("default-style"), $("bulk-style")]) {
-    select.innerHTML = "";
-    for (const style of state.catalog.styles) {
-      const option = document.createElement("option");
-      option.value = style.id;
-      option.textContent = style.name;
-      option.title = style.description;
-      select.append(option);
-    }
-    select.value = state.catalog.default_style;
+  const inspStyle = $("insp-style");
+  inspStyle.innerHTML = "";
+  for (const style of state.catalog.styles) {
+    const option = new Option(style.name, style.id);
+    option.title = style.description;
+    inspStyle.append(option);
   }
 
   const transpose = $("transpose");
   transpose.innerHTML = "";
-  for (let semitones = -12; semitones <= 12; semitones++) {
-    const option = document.createElement("option");
-    option.value = String(semitones);
-    option.textContent = semitones === 0
-      ? "Original key"
-      : `${semitones > 0 ? "+" : ""}${semitones} semitone${Math.abs(semitones) === 1 ? "" : "s"}`;
-    transpose.append(option);
+  for (let n = -12; n <= 12; n++) {
+    transpose.append(new Option(
+      n === 0 ? "Original key" : `${n > 0 ? "+" : ""}${n} semitone${Math.abs(n) === 1 ? "" : "s"}`,
+      String(n),
+    ));
   }
   transpose.value = "0";
 
   $("accepted-types").textContent =
-    `Scores: ${state.catalog.accepted_score.join(", ")} · Audio: ${state.catalog.accepted_audio.join(", ")}`;
+    `Scores: ${state.catalog.accepted_score.join(" ")} · Audio: ${state.catalog.accepted_audio.join(" ")}`;
+
+  renderPalette();
 }
 
-// ---------------------------------------------------------------------------
-// Upload
-// ---------------------------------------------------------------------------
+function renderPalette() {
+  const palette = $("palette");
+  palette.innerHTML = "";
+  const counts = new Map();
+  for (const bar of state.bars) counts.set(bar.style, (counts.get(bar.style) || 0) + 1);
+
+  for (const style of state.catalog.styles) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "style-chip" + (state.activeStyle === style.id ? " active" : "");
+    chip.style.setProperty("--swatch", colourFor(style.id));
+    chip.title = style.description;
+    chip.setAttribute("role", "option");
+    chip.setAttribute("aria-selected", String(state.activeStyle === style.id));
+
+    const swatch = document.createElement("span");
+    swatch.className = "swatch";
+    const label = document.createElement("span");
+    label.textContent = style.name;
+    chip.append(swatch, label);
+
+    const used = counts.get(style.id);
+    if (used) {
+      const badge = document.createElement("span");
+      badge.className = "count";
+      badge.textContent = used;
+      chip.append(badge);
+    }
+
+    chip.addEventListener("click", () => {
+      state.activeStyle = style.id;
+      showStyleDetail(style);
+      if (state.selected.size) {
+        applyStyleToSelection(style.id);
+      } else {
+        $("palette-hint").textContent = "Select bars below, then click a style to apply it.";
+      }
+      renderPalette();
+    });
+    palette.append(chip);
+  }
+}
+
+function showStyleDetail(style) {
+  $("sd-name").textContent = style.name;
+  $("sd-description").textContent = style.description;
+  $("sd-syllable").textContent = `sings “${style.syllable}”`;
+  $("style-detail").hidden = false;
+  $("sd-preview").dataset.style = style.id;
+}
+
+// ───────────────────────────────────────────────────────── upload ──
 
 async function uploadFile(file) {
-  if (!file || state.busy) return;
-  state.busy = true;
-  $("dropzone").classList.add("busy");
-
+  if (!file) return;
   const isAudio = /\.(wav|mp3|flac|ogg|m4a|aac|aiff|aif|wma)$/i.test(file.name);
+  $("dropzone").classList.add("busy");
+  $("upload-progress").hidden = false;
   setStatus($("upload-status"),
     isAudio ? `Transcribing “${file.name}” — this can take up to a minute…`
             : `Reading “${file.name}”…`);
@@ -106,210 +190,357 @@ async function uploadFile(file) {
   form.append("merge_repeats", $("merge-repeats").checked ? "true" : "false");
 
   try {
-    const analysis = await api("/api/upload", { method: "POST", body: form });
-    applyAnalysis(analysis);
-    setStatus($("upload-status"), `Loaded “${analysis.title}”.`, "ok");
+    applyAnalysis(await api("/api/upload", { method: "POST", body: form }));
+    setStatus($("upload-status"), "");
   } catch (error) {
     setStatus($("upload-status"), error.message, "error");
   } finally {
-    state.busy = false;
     $("dropzone").classList.remove("busy");
+    $("upload-progress").hidden = true;
   }
 }
 
 function applyAnalysis(analysis) {
   state.session = analysis;
   state.selected.clear();
+  state.lastClickedBar = null;
+  state.currentBar = -1;
   state.bars = analysis.bars.map((bar) => ({
     index: bar.index,
     chord: bar.chord,
     roman: bar.roman,
     melody: bar.melody,
-    style: $("default-style").value,
+    style: state.catalog.default_style,
     chordOverride: "",
   }));
 
-  $("summary").innerHTML = "";
-  const chips = [
-    ["Title", analysis.title],
-    ["Source", analysis.source_kind === "audio" ? "audio transcription" : "notated score"],
-    ["Key", `${analysis.key} (confidence ${analysis.key_confidence})`],
-    ["Time", analysis.time_signature],
-    ["Tempo", `${Math.round(analysis.tempo)} BPM`],
-    ["Bars", analysis.bar_count],
-  ];
-  for (const [label, value] of chips) {
-    const chip = document.createElement("span");
-    chip.className = "chip";
-    chip.innerHTML = `${label} <b></b>`;
-    chip.querySelector("b").textContent = value;
-    $("summary").append(chip);
-  }
-
-  const note = $("transcription-note");
-  note.textContent = analysis.transcription_note || "";
-  note.hidden = !analysis.transcription_note;
-
+  $("piece-title").textContent = analysis.title;
+  const source = analysis.source_kind === "audio" ? "from audio" : "from score";
+  $("piece-meta").textContent =
+    `${source} · ${analysis.key} · ${analysis.time_signature} · ${analysis.bar_count} bars`;
   $("tempo").value = Math.round(analysis.tempo);
-  renderBars();
 
-  $("arrange-panel").hidden = false;
-  $("result-panel").hidden = true;
-  $("arrange-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+  const notices = [];
+  if (analysis.transcription_note) notices.push(analysis.transcription_note);
+  showWarnings(notices);
+
+  state.activeStyle = state.catalog.default_style;
+  const first = state.catalog.styles.find((s) => s.id === state.activeStyle);
+  if (first) showStyleDetail(first);
+
+  $("stage-upload").hidden = true;
+  $("stage-work").hidden = false;
+
+  renderTimeline();
+  renderPalette();
+  updateSelectionUi();
+  scheduleArrange(0);
 }
 
-// ---------------------------------------------------------------------------
-// Bar grid
-// ---------------------------------------------------------------------------
+function showWarnings(messages) {
+  const box = $("warnings");
+  if (!messages.length) { box.hidden = true; return; }
+  box.innerHTML = "<ul>" + messages.map((m) => `<li>${escapeHtml(m)}</li>`).join("") + "</ul>";
+  box.hidden = false;
+}
 
-function renderBars() {
-  const container = $("bars");
-  container.innerHTML = "";
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ─────────────────────────────────────────────────────── timeline ──
+
+/** Melody contour for one bar, drawn as note-length ticks at pitch height. */
+function sparkline(bar, lo, hi) {
+  const W = 78, H = 26, PAD = 3;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "tl-spark");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+
+  const notes = bar.melody.filter((n) => n[0] !== null);
+  if (!notes.length) return svg;
+
+  const barLength = notes.reduce((max, n) => Math.max(max, n[1] + n[2]), 0) || 4;
+  const span = Math.max(1, hi - lo);
+  for (const [pitch, offset, duration] of notes) {
+    const x1 = PAD + (offset / barLength) * (W - PAD * 2);
+    const x2 = PAD + ((offset + duration) / barLength) * (W - PAD * 2);
+    const y = H - PAD - ((pitch - lo) / span) * (H - PAD * 2);
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", x1.toFixed(1));
+    line.setAttribute("x2", Math.max(x1 + 2, x2 - 1).toFixed(1));
+    line.setAttribute("y1", y.toFixed(1));
+    line.setAttribute("y2", y.toFixed(1));
+    line.setAttribute("stroke-width", "2");
+    line.setAttribute("stroke-linecap", "round");
+    svg.append(line);
+  }
+  return svg;
+}
+
+function renderTimeline() {
+  const timeline = $("timeline");
+  timeline.innerHTML = "";
+
+  const pitches = state.bars.flatMap((b) => b.melody.filter((n) => n[0] !== null).map((n) => n[0]));
+  const lo = pitches.length ? Math.min(...pitches) : 60;
+  const hi = pitches.length ? Math.max(...pitches) : 72;
 
   for (const bar of state.bars) {
-    const card = document.createElement("div");
-    card.className = "bar" + (state.selected.has(bar.index) ? " selected" : "");
-    card.dataset.index = String(bar.index);
+    const cell = document.createElement("div");
+    cell.className = "tl-bar";
+    cell.dataset.index = String(bar.index);
+    cell.style.setProperty("--swatch", colourFor(bar.style));
+    cell.setAttribute("role", "option");
 
-    const pitches = bar.melody
-      .filter((entry) => entry[0] !== null)
-      .map((entry) => noteName(entry[0]));
+    const num = document.createElement("div");
+    num.className = "tl-num";
+    num.textContent = bar.index + 1;
 
-    const head = document.createElement("div");
-    head.className = "bar-head";
-    const number = document.createElement("span");
-    number.className = "bar-number";
-    number.textContent = `Bar ${bar.index + 1}`;
-    const roman = document.createElement("span");
-    roman.className = "bar-roman";
-    roman.textContent = bar.roman || "";
-    head.append(number, roman);
+    const chord = document.createElement("div");
+    chord.className = "tl-chord" + (bar.chordOverride ? " overridden" : "");
+    chord.textContent = bar.chordOverride || bar.chord;
+    chord.title = bar.chordOverride ? `Overridden (detected: ${bar.chord})` : `Detected: ${bar.chord}`;
 
-    const melody = document.createElement("div");
-    melody.className = "bar-melody";
-    melody.textContent = pitches.length ? pitches.join(" ") : "(rest)";
-    melody.title = melody.textContent;
+    const style = document.createElement("div");
+    style.className = "tl-style";
+    style.textContent = styleName(bar.style);
 
-    const styleField = document.createElement("div");
-    styleField.className = "field";
-    const styleLabel = document.createElement("span");
-    styleLabel.className = "field-label";
-    styleLabel.textContent = "Harmony style";
-    const styleSelect = document.createElement("select");
-    for (const style of state.catalog.styles) {
-      const option = document.createElement("option");
-      option.value = style.id;
-      option.textContent = style.name;
-      option.title = style.description;
-      styleSelect.append(option);
+    cell.append(num, sparkline(bar, lo, hi), chord, style);
+    timeline.append(cell);
+  }
+  syncTimelineSelection();
+}
+
+function syncTimelineSelection() {
+  for (const cell of $("timeline").children) {
+    const index = Number(cell.dataset.index);
+    cell.classList.toggle("selected", state.selected.has(index));
+    cell.classList.toggle("playing", index === state.currentBar);
+    cell.setAttribute("aria-selected", String(state.selected.has(index)));
+  }
+}
+
+/**
+ * Refresh one bar's cell in place.
+ *
+ * Rebuilding the whole strip on every edit would be wasteful at 32+ bars and
+ * would tear down the element a drag is currently tracking.
+ */
+function updateBarCell(index) {
+  const cell = $("timeline").children[index];
+  const bar = state.bars[index];
+  if (!cell || !bar) return;
+
+  cell.style.setProperty("--swatch", colourFor(bar.style));
+  cell.querySelector(".tl-style").textContent = styleName(bar.style);
+
+  const chord = cell.querySelector(".tl-chord");
+  chord.textContent = bar.chordOverride || bar.chord;
+  chord.classList.toggle("overridden", !!bar.chordOverride);
+  chord.title = bar.chordOverride
+    ? `Overridden (detected: ${bar.chord})`
+    : `Detected: ${bar.chord}`;
+}
+
+// Drag across the timeline to select a range.
+function installTimelineSelection() {
+  const timeline = $("timeline");
+  let dragging = false;
+  let anchor = null;
+
+  const barAt = (event) => {
+    const cell = event.target.closest(".tl-bar");
+    return cell ? Number(cell.dataset.index) : null;
+  };
+
+  timeline.addEventListener("mousedown", (event) => {
+    const index = barAt(event);
+    if (index === null) return;
+    event.preventDefault();
+
+    if (event.shiftKey && state.lastClickedBar !== null) {
+      selectRange(state.lastClickedBar, index, event.ctrlKey || event.metaKey);
+    } else if (event.ctrlKey || event.metaKey) {
+      state.selected.has(index) ? state.selected.delete(index) : state.selected.add(index);
+      state.lastClickedBar = index;
+    } else {
+      state.selected.clear();
+      state.selected.add(index);
+      state.lastClickedBar = index;
     }
-    styleSelect.value = bar.style;
-    styleSelect.addEventListener("change", (event) => {
-      event.stopPropagation();
-      bar.style = styleSelect.value;
-    });
-    styleSelect.addEventListener("click", (event) => event.stopPropagation());
-    styleField.append(styleLabel, styleSelect);
+    dragging = true;
+    anchor = index;
+    updateSelectionUi();
+  });
 
-    const chordField = document.createElement("div");
-    chordField.className = "field";
-    const chordLabel = document.createElement("span");
-    chordLabel.className = "field-label";
-    chordLabel.textContent = "Chord";
-    const chordInput = document.createElement("input");
-    chordInput.type = "text";
-    chordInput.placeholder = bar.chord;
-    chordInput.value = bar.chordOverride;
-    chordInput.title = `Detected: ${bar.chord}. Type to override, e.g. Fmaj7, Ab, G7sus4.`;
-    chordInput.addEventListener("input", () => {
-      bar.chordOverride = chordInput.value.trim();
-      chordInput.classList.remove("invalid");
-    });
-    chordInput.addEventListener("click", (event) => event.stopPropagation());
-    chordField.append(chordLabel, chordInput);
+  timeline.addEventListener("mouseover", (event) => {
+    if (!dragging) return;
+    const index = barAt(event);
+    if (index === null || anchor === null) return;
+    selectRange(anchor, index, false);
+    updateSelectionUi();
+  });
 
-    card.append(head, melody, styleField, chordField);
-    card.addEventListener("click", () => {
-      if (state.selected.has(bar.index)) state.selected.delete(bar.index);
-      else state.selected.add(bar.index);
-      card.classList.toggle("selected");
-    });
+  window.addEventListener("mouseup", () => { dragging = false; anchor = null; });
 
-    container.append(card);
+  timeline.addEventListener("keydown", (event) => {
+    if (event.key === "a" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      selectAll();
+    } else if (event.key === "Escape") {
+      state.selected.clear();
+      updateSelectionUi();
+    }
+  });
+}
+
+function selectRange(from, to, additive) {
+  if (!additive) state.selected.clear();
+  const [lo, hi] = from <= to ? [from, to] : [to, from];
+  for (let i = lo; i <= hi; i++) state.selected.add(i);
+}
+
+function selectAll() {
+  state.bars.forEach((b) => state.selected.add(b.index));
+  updateSelectionUi();
+}
+
+function updateSelectionUi() {
+  syncTimelineSelection();
+
+  const count = state.selected.size;
+  const label = $("selection-label");
+  const inspector = $("inspector");
+
+  if (!count) {
+    label.textContent = "No bars selected";
+    inspector.hidden = true;
+    return;
+  }
+
+  const indices = [...state.selected].sort((a, b) => a - b);
+  label.textContent = count === 1
+    ? `Bar ${indices[0] + 1} selected`
+    : `${count} bars selected`;
+
+  inspector.hidden = false;
+  $("insp-title").textContent = count === 1
+    ? `Bar ${indices[0] + 1}`
+    : `Bars ${indices[0] + 1}–${indices[indices.length - 1] + 1}`;
+
+  const styles = new Set(indices.map((i) => state.bars[i].style));
+  const styleSelect = $("insp-style");
+  styleSelect.value = styles.size === 1 ? [...styles][0] : "";
+  if (styles.size > 1) styleSelect.selectedIndex = -1;
+
+  const chordBox = $("insp-chord");
+  if (count === 1) {
+    const bar = state.bars[indices[0]];
+    chordBox.disabled = false;
+    chordBox.value = bar.chordOverride;
+    chordBox.placeholder = bar.chord;
+    $("insp-chord-hint").textContent = `Detected: ${bar.chord}`;
+  } else {
+    chordBox.disabled = true;
+    chordBox.value = "";
+    chordBox.placeholder = "select one bar";
+    $("insp-chord-hint").textContent = "Chords are edited one bar at a time.";
   }
 }
 
-function applyStyle(indices, styleId) {
-  for (const bar of state.bars) {
-    if (indices === null || indices.has(bar.index)) bar.style = styleId;
+function applyStyleToSelection(styleId) {
+  if (!state.selected.size) return;
+  for (const index of state.selected) {
+    state.bars[index].style = styleId;
+    updateBarCell(index);
   }
-  renderBars();
+  renderPalette();
+  scheduleArrange();
 }
 
-// ---------------------------------------------------------------------------
-// Arrange
-// ---------------------------------------------------------------------------
+// ──────────────────────────────────────────────────────── arrange ──
 
-async function createArrangement() {
-  if (!state.session || state.busy) return;
-  state.busy = true;
-  $("arrange").disabled = true;
-  setStatus($("arrange-status"), "Working out the voicings…");
+function scheduleArrange(delay = ARRANGE_DEBOUNCE_MS) {
+  clearTimeout(state.arrangeTimer);
+  $("sync-state").dataset.state = "working";
+  state.arrangeTimer = setTimeout(runArrange, delay);
+}
+
+async function runArrange() {
+  if (!state.session) return;
+
+  // Supersede any request still in flight: only the newest result is wanted.
+  state.arrangeAbort?.abort();
+  const controller = new AbortController();
+  state.arrangeAbort = controller;
+  const seq = ++state.arrangeSeq;
 
   const payload = {
     session_id: state.session.session_id,
     ensemble: $("ensemble").value,
-    default_style: $("default-style").value,
+    default_style: state.catalog.default_style,
     transpose: Number($("transpose").value),
     tempo: Number($("tempo").value) || null,
     include_lyrics: $("include-lyrics").checked,
-    bars: state.bars.map((bar) => ({
-      index: bar.index,
-      style: bar.style,
-      chord: bar.chordOverride || null,
+    bars: state.bars.map((b) => ({
+      index: b.index,
+      style: b.style,
+      chord: b.chordOverride || null,
     })),
   };
 
   try {
-    const result = await api("/api/arrange", {
+    const response = await fetch("/api/arrange", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
-    await showResult(result);
-    setStatus($("arrange-status"), "Done.", "ok");
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.detail || `${response.status} ${response.statusText}`);
+    }
+    const result = await response.json();
+    if (seq !== state.arrangeSeq) return;  // a newer request already won
+
+    const notices = [];
+    if (state.session.transcription_note) notices.push(state.session.transcription_note);
+    notices.push(...result.warnings);
+    showWarnings(notices);
+
+    $("download-midi").href = `/api/arrangement/${result.arrangement_id}.mid`;
+    $("download-xml").href = `/api/arrangement/${result.arrangement_id}.musicxml`;
+    $("player").src = `/api/arrangement/${result.arrangement_id}.mid`;
+
+    computeBarTimes();
+    await renderScore(result.musicxml);
+    $("sync-state").dataset.state = "ok";
   } catch (error) {
-    setStatus($("arrange-status"), error.message, "error");
-  } finally {
-    state.busy = false;
-    $("arrange").disabled = false;
+    if (error.name === "AbortError") return;
+    $("sync-state").dataset.state = "error";
+    setStatus($("score-status"), error.message, "error");
   }
 }
 
-async function showResult(result) {
-  $("result-panel").hidden = false;
-
-  const warnings = $("warnings");
-  if (result.warnings.length) {
-    warnings.innerHTML = "<ul>" +
-      result.warnings.map((text) => `<li>${escapeHtml(text)}</li>`).join("") + "</ul>";
-    warnings.hidden = false;
-  } else {
-    warnings.hidden = true;
-  }
-
-  const midiUrl = `/api/arrangement/${result.arrangement_id}.mid`;
-  $("download-midi").href = midiUrl;
-  $("download-xml").href = `/api/arrangement/${result.arrangement_id}.musicxml`;
-
-  // Point both at the MIDI. The player's `visualizer` attribute alone does not
-  // reliably populate the piano roll, so the visualizer loads the file too.
-  $("player").src = midiUrl;
-  $("viz").src = midiUrl;
-
-  $("result-panel").scrollIntoView({ behavior: "smooth", block: "start" });
-  await renderScore(result.musicxml);
+/** Wall-clock span of each bar, for the playback cursor. */
+function computeBarTimes() {
+  const tempo = Number($("tempo").value) || state.session.tempo || 96;
+  const secondsPerQuarter = 60 / tempo;
+  let cursor = 0;
+  state.barTimes = state.session.bars.map((bar) => {
+    const quarters = bar.beats * (4 / bar.beat_type);
+    const start = cursor;
+    cursor += quarters * secondsPerQuarter;
+    return { start, end: cursor };
+  });
+  state.duration = cursor;
 }
+
+// ────────────────────────────────────────────────────────── score ──
 
 async function renderScore(musicxml) {
   const target = $("score");
@@ -319,12 +550,11 @@ async function renderScore(musicxml) {
       "Playback and downloads still work.", "error");
     return;
   }
-  setStatus($("score-status"), "Engraving…");
   try {
     if (!state.osmd) {
       state.osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(target, {
-        autoResize: true,
-        drawTitle: true,
+        autoResize: false,
+        drawTitle: false,
         drawPartNames: true,
         backend: "svg",
       });
@@ -332,13 +562,13 @@ async function renderScore(musicxml) {
     await state.osmd.load(musicxml);
     state.osmd.render();
 
-    // The panel has only just been unhidden, so the container may still have
-    // measured as zero-width. Re-engrave once layout has settled if so.
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    // The panel may have been laid out at zero width a moment ago.
+    await new Promise(requestAnimationFrame);
     const svg = target.querySelector("svg");
     if (svg && svg.getBoundingClientRect().width < 1 && target.clientWidth > 0) {
       state.osmd.render();
     }
+    measureScoreBars();
     setStatus($("score-status"), "");
   } catch (error) {
     setStatus($("score-status"),
@@ -346,17 +576,169 @@ async function renderScore(musicxml) {
   }
 }
 
-function escapeHtml(text) {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
+/**
+ * Pixel rect of each bar in the rendered score.
+ *
+ * OSMD reports geometry in its own units; the SVG is drawn at ten pixels per
+ * unit times the zoom. Each bar spans several staves, so the rect is the union
+ * over them.
+ */
+function measureScoreBars() {
+  state.measureRects = [];
+  const list = state.osmd?.GraphicSheet?.MeasureList;
+  if (!list) return;
+  const scale = 10 * (state.osmd.zoom || 1);
+
+  state.measureRects = list.map((staves) => {
+    const live = staves.filter(Boolean);
+    if (!live.length) return null;
+    const boxes = live.map((m) => m.PositionAndShape);
+    const x = Math.min(...boxes.map((b) => b.AbsolutePosition.x));
+    const right = Math.max(...boxes.map((b) => b.AbsolutePosition.x + b.Size.width));
+    const y = Math.min(...boxes.map((b) => b.AbsolutePosition.y));
+    const bottom = Math.max(...boxes.map((b) => b.AbsolutePosition.y + b.Size.height));
+    return { x: x * scale, y: y * scale, w: (right - x) * scale, h: (bottom - y) * scale };
+  });
 }
 
-// ---------------------------------------------------------------------------
-// Wiring
-// ---------------------------------------------------------------------------
+function highlightBarInScore(index, playing) {
+  const rect = state.measureRects[index];
+  const box = $("score-highlight");
+  const score = $("score");
+  if (!rect) { box.hidden = true; return; }
 
-function init() {
+  // Rects are relative to the SVG, which sits inside a scrolling container.
+  box.hidden = false;
+  box.classList.toggle("playing", !!playing);
+  box.style.left = `${rect.x + score.clientLeft + 6 - score.scrollLeft}px`;
+  box.style.top = `${rect.y + 6}px`;
+  box.style.width = `${rect.w}px`;
+  box.style.height = `${rect.h}px`;
+}
+
+function installScoreClick() {
+  $("score").addEventListener("click", (event) => {
+    if (!state.measureRects.length) return;
+    const score = $("score");
+    const bounds = score.getBoundingClientRect();
+    const x = event.clientX - bounds.left + score.scrollLeft - 6;
+    const y = event.clientY - bounds.top - 6;
+    const index = state.measureRects.findIndex(
+      (r) => r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h,
+    );
+    if (index < 0) return;
+    state.selected.clear();
+    state.selected.add(index);
+    state.lastClickedBar = index;
+    updateSelectionUi();
+    highlightBarInScore(index, false);
+    $("timeline").children[index]?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  });
+
+  $("score").addEventListener("scroll", () => {
+    if (!$("score-highlight").hidden) {
+      highlightBarInScore(state.currentBar >= 0 ? state.currentBar : state.lastClickedBar, state.playing);
+    }
+  });
+}
+
+// ────────────────────────────────────────────────────── transport ──
+
+function installTransport() {
+  const player = $("player");
+
+  $("play").addEventListener("click", () => {
+    if (state.playing) player.stop();
+    else player.start();
+  });
+
+  player.addEventListener("start", () => setPlaying(true));
+  player.addEventListener("stop", () => { setPlaying(false); setCurrentBar(-1); });
+  player.addEventListener("load", () => {
+    state.duration = player.duration || state.duration;
+    $("seek").max = String(state.duration || 100);
+  });
+  player.addEventListener("note", () => tickTransport());
+
+  // html-midi-player only fires events per note, which is too coarse for a
+  // smooth cursor, so drive the display from a frame loop while playing.
+  const frame = () => {
+    if (state.playing) tickTransport();
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+
+  $("seek").addEventListener("input", (event) => {
+    const seconds = Number(event.target.value);
+    player.currentTime = seconds;
+    $("time-display").textContent = formatTime(seconds);
+    setCurrentBar(barAtTime(seconds));
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.code !== "Space") return;
+    const tag = event.target.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    event.preventDefault();
+    state.playing ? player.stop() : player.start();
+  });
+}
+
+function setPlaying(playing) {
+  state.playing = playing;
+  // SVGElement has no `hidden` IDL property, so setting `.hidden` on the icons
+  // would only create a JS expando and never reach CSS. Toggle a class instead.
+  $("play").classList.toggle("playing", playing);
+  $("play").setAttribute("aria-label", playing ? "Stop" : "Play");
+}
+
+function tickTransport() {
+  const player = $("player");
+  const now = player.currentTime || 0;
+  $("time-display").textContent = formatTime(now);
+  $("seek").value = String(now);
+  setCurrentBar(barAtTime(now));
+}
+
+function barAtTime(seconds) {
+  return state.barTimes.findIndex((b) => seconds >= b.start && seconds < b.end);
+}
+
+function setCurrentBar(index) {
+  if (index === state.currentBar) return;
+  state.currentBar = index;
+  syncTimelineSelection();
+  if (index >= 0) {
+    highlightBarInScore(index, true);
+    $("timeline").children[index]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  } else if (state.selected.size !== 1) {
+    $("score-highlight").hidden = true;
+  }
+}
+
+async function previewStyle(styleId) {
+  const player = $("preview-player");
+  const main = $("player");
+  if (state.playing) main.stop();
+  player.src = `/api/preview/${styleId}.mid?ensemble=${encodeURIComponent($("ensemble").value)}`;
+  const button = $("sd-preview");
+  button.disabled = true;
+  try {
+    await new Promise((resolve) => {
+      const done = () => { player.removeEventListener("load", done); resolve(); };
+      player.addEventListener("load", done);
+      setTimeout(done, 4000);
+    });
+    player.start();
+    player.addEventListener("stop", () => { button.disabled = false; }, { once: true });
+  } catch {
+    button.disabled = false;
+  }
+}
+
+// ───────────────────────────────────────────────────────── wiring ──
+
+function installUpload() {
   const dropzone = $("dropzone");
   const input = $("file-input");
 
@@ -370,16 +752,10 @@ function init() {
   });
 
   for (const name of ["dragenter", "dragover"]) {
-    dropzone.addEventListener(name, (event) => {
-      event.preventDefault();
-      dropzone.classList.add("dragover");
-    });
+    dropzone.addEventListener(name, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); });
   }
   for (const name of ["dragleave", "drop"]) {
-    dropzone.addEventListener(name, (event) => {
-      event.preventDefault();
-      dropzone.classList.remove("dragover");
-    });
+    dropzone.addEventListener(name, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); });
   }
   dropzone.addEventListener("drop", (event) => {
     if (event.dataTransfer.files.length) uploadFile(event.dataTransfer.files[0]);
@@ -388,58 +764,83 @@ function init() {
   for (const button of document.querySelectorAll("[data-example]")) {
     button.addEventListener("click", async () => {
       const name = button.dataset.example;
-      setStatus($("upload-status"), `Fetching the example “${name}”…`);
+      setStatus($("upload-status"), `Fetching “${name}”…`);
       try {
         const response = await fetch(`/samples/${name}`);
         if (!response.ok) throw new Error(`example not found (${response.status})`);
-        const blob = await response.blob();
-        await uploadFile(new File([blob], name));
+        await uploadFile(new File([await response.blob()], name));
       } catch (error) {
         setStatus($("upload-status"), error.message, "error");
       }
     });
   }
+}
 
-  $("apply-all").addEventListener("click", () => applyStyle(null, $("bulk-style").value));
-  $("apply-selected").addEventListener("click", () => {
-    if (!state.selected.size) {
-      setStatus($("arrange-status"), "Select one or more bars first.", "error");
-      return;
-    }
-    applyStyle(state.selected, $("bulk-style").value);
+function installControls() {
+  $("back-to-upload").addEventListener("click", () => {
+    if (state.playing) $("player").stop();
+    $("stage-work").hidden = true;
+    $("stage-upload").hidden = false;
   });
-  $("clear-selection").addEventListener("click", () => {
+
+  for (const id of ["ensemble", "transpose", "tempo", "include-lyrics"]) {
+    $(id).addEventListener("change", () => scheduleArrange());
+  }
+
+  $("select-all").addEventListener("click", selectAll);
+  $("select-none").addEventListener("click", () => {
     state.selected.clear();
-    renderBars();
+    updateSelectionUi();
   });
 
-  $("default-style").addEventListener("change", () => {
-    $("bulk-style").value = $("default-style").value;
+  $("insp-style").addEventListener("change", (event) => {
+    applyStyleToSelection(event.target.value);
+    const style = state.catalog.styles.find((s) => s.id === event.target.value);
+    if (style) { state.activeStyle = style.id; showStyleDetail(style); renderPalette(); }
   });
 
-  $("chords-per-bar").addEventListener("change", async () => {
-    if (!state.session) return;
-    const form = new FormData();
-    form.append("session_id", state.session.session_id);
-    form.append("chords_per_bar", $("chords-per-bar").value);
-    try {
-      const styles = state.bars.map((bar) => bar.style);
-      const overrides = state.bars.map((bar) => bar.chordOverride);
-      const analysis = await api("/api/reanalyze", { method: "POST", body: form });
-      applyAnalysis(analysis);
-      // Keep whatever the user had already chosen per bar.
-      state.bars.forEach((bar, index) => {
-        if (styles[index]) bar.style = styles[index];
-        if (overrides[index]) bar.chordOverride = overrides[index];
-      });
-      renderBars();
-    } catch (error) {
-      setStatus($("upload-status"), error.message, "error");
+  const chordBox = $("insp-chord");
+  chordBox.addEventListener("input", () => {
+    if (state.selected.size !== 1) return;
+    const index = [...state.selected][0];
+    state.bars[index].chordOverride = chordBox.value.trim();
+    updateBarCell(index);
+    scheduleArrange();
+  });
+
+  $("insp-reset").addEventListener("click", () => {
+    for (const index of state.selected) {
+      state.bars[index].chordOverride = "";
+      updateBarCell(index);
     }
+    chordBox.value = "";
+    scheduleArrange();
   });
 
-  $("arrange").addEventListener("click", createArrangement);
+  $("sd-preview").addEventListener("click", (event) => {
+    const styleId = event.currentTarget.dataset.style;
+    if (styleId) previewStyle(styleId);
+  });
 
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (!state.osmd || $("stage-work").hidden) return;
+      state.osmd.render();
+      measureScoreBars();
+      if (state.currentBar >= 0) highlightBarInScore(state.currentBar, state.playing);
+      else $("score-highlight").hidden = true;
+    }, 200);
+  });
+}
+
+function init() {
+  installUpload();
+  installControls();
+  installTimelineSelection();
+  installScoreClick();
+  installTransport();
   loadCatalog().catch((error) =>
     setStatus($("upload-status"), `Could not start up: ${error.message}`, "error"));
 }

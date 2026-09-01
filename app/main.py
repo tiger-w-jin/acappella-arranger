@@ -29,6 +29,7 @@ from .models import (
     SourceScore,
     StyleInfo,
 )
+from .preview import preview_midi
 from .theory import KeyContext
 
 _log = logging.getLogger("acappella")
@@ -317,6 +318,20 @@ def arrange(request: ArrangeRequest) -> ArrangeResponse:
         ensemble=ensemble.id,
         key=arrangement.key.name,
         warnings=warnings + arrangement.warnings,
+    )
+
+
+@app.get("/api/preview/{style_id}.mid")
+def preview(style_id: str, ensemble: str = "satb") -> Response:
+    """A short ii-V-I rendered in one style, so the palette can audition it."""
+    if style_id not in STYLES:
+        raise HTTPException(404, f"Unknown style '{style_id}'.")
+    if ensemble not in ENSEMBLES:
+        raise HTTPException(400, f"Unknown ensemble '{ensemble}'.")
+    return Response(
+        content=preview_midi(style_id, ensemble),
+        media_type="audio/midi",
+        headers={"Cache-Control": "public, max-age=3600"},
     )
 
 
