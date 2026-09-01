@@ -46,8 +46,29 @@ sings on:
 tenor sits *above* the lead. Each voice has a real range, and the arranger
 tells you when a style asks for notes that part cannot sing.
 
-**Output.** MusicXML (opens in MuseScore, Sibelius, Finale, Dorico), MIDI, plus
-in-browser playback with a choir soundfont and an engraved score preview.
+**Lyrics.** Type the words and they land one syllable per note, with the
+hyphenation a vocal score needs. The convention is the usual one: a space
+starts a word, a hyphen splits a word across notes, `_` holds a syllable over
+one more note.
+
+```
+A-ma-zing grace how sweet the sound
+```
+
+By default only the melody carries the words and the backing sings its style
+syllable; one checkbox puts them under every part instead, which is what you
+want for homophonic writing. Words only reach a backing part where its chord
+actually lands on a melody note — a held pad cannot sing them — and any
+mismatch between syllables and notes is reported rather than hidden.
+
+**Output.** MusicXML (opens in MuseScore, Sibelius, Finale, Dorico), MIDI, PDF,
+plus in-browser playback with a choir soundfont and an engraved score preview.
+
+PDF is produced in the browser: no PDF engine is installed locally, so the
+score is re-engraved offscreen at A4 — OSMD paginates it properly instead of
+producing one unreadably long strip — and each page is written as vectors, so
+it stays sharp at any zoom and prints cleanly. The libraries for it load only
+the first time you export one.
 
 ## Two modes
 
@@ -55,7 +76,8 @@ in-browser playback with a choir soundfont and an engraved score preview.
 piece, listen, download. Nothing else is on screen.
 
 **Pro** adds everything below — per-bar styles, chord overrides, transpose,
-tempo, backing syllables, and the command box. The choice is remembered.
+tempo, chords-per-bar, backing syllables, lyrics, and the command box. The
+choice is remembered.
 
 ## Working in Pro mode
 
@@ -179,6 +201,7 @@ app/
   theory.py          pitch, chord, key primitives (pure ints, no music21)
   analysis.py        key detection, chord inference, chord-symbol parsing
   preview.py         the ii-V-I demo the style palette auditions
+  lyrics.py          syllable parsing and fitting words to notes
   commands.py        the typed-command grammar
   llm.py             optional Gemini fallback, off unless GEMINI_API_KEY is set
   ingest/
@@ -190,7 +213,7 @@ app/
     arranger.py      per-bar styles -> a complete multi-part arrangement
   export.py          music21 score -> MusicXML / MIDI
   static/            the web UI (no build step, vanilla JS)
-tests/               318 tests: pipeline, styles x ensembles, audio, commands
+tests/               334 tests: pipeline, styles x ensembles, audio, commands, lyrics
 samples/             a notated melody and a recording, used by the UI examples
 ```
 
@@ -207,14 +230,15 @@ Covers every style against every ensemble (rendering, no voice crossing, no
 out-of-range writing), key and chord analysis, chord-symbol round trips,
 transposition, MusicXML/MIDI export, style previews (including that no two
 styles render identically), real transcription of a synthesised melody, the
-command grammar, and the validation that stops a bad LLM response reaching the
-arranger.
+command grammar, lyric parsing and placement, and the validation that stops a
+bad LLM response reaching the arranger.
 
 ## Known limits
 
-- Scanned sheet music (PDF or images) is not supported; optical music
-  recognition needs a separate engine. MusicXML from MuseScore works well.
-- PDF export would need MuseScore or LilyPond installed; MusicXML covers it.
+- Scanned sheet music (PDF or images) is not supported as *input*; optical
+  music recognition needs a separate engine. MusicXML from MuseScore works well.
+- PDF *export* needs a network connection the first time you use it, since the
+  conversion libraries come from a CDN. Everything else runs offline.
 - Audio transcription follows one melodic line. Dense mixes transcribe poorly —
   a solo voice or lead instrument works best.
 - Time signature and pickup detection come from notated input only.

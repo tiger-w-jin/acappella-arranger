@@ -29,10 +29,20 @@ const STYLE_COLOURS = {
 const FALLBACK_COLOUR = "#7d8496";
 
 const ARRANGE_DEBOUNCE_MS = 450;
+const LYRICS_DEBOUNCE_MS = 700;
+const AUDIO_RE = /\.(wav|mp3|flac|ogg|m4a|aac|aiff|aif|wma)$/i;
+
+// Loaded on demand the first time a PDF is exported, so the page does not pay
+// for a PDF library it may never use.
+const PDF_SCRIPTS = [
+  "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js",
+  "https://cdn.jsdelivr.net/npm/svg2pdf.js@2.2.3/dist/svg2pdf.umd.min.js",
+];
 const MODE_KEY = "acappella.mode";
 
 const state = {
   mode: "simple",       // "simple" | "pro"
+  pendingAudio: null,   // audio file waiting on its transcription settings
   undoSnapshot: null,   // restores the state before the last typed command
   catalog: null,
   session: null,
@@ -183,9 +193,29 @@ function showStyleDetail(style) {
 
 // ───────────────────────────────────────────────────────── upload ──
 
+/**
+ * Notated files go straight through. Audio pauses first: the time signature and
+ * repeat-merging change what gets transcribed, and transcription is slow, so it
+ * is worth showing those two settings at the one moment they matter.
+ */
+function chooseFile(file) {
+  if (!file) return;
+  if (AUDIO_RE.test(file.name)) {
+    state.pendingAudio = file;
+    $("audio-filename").textContent = file.name;
+    $("audio-options").hidden = false;
+    setStatus($("upload-status"), "");
+    $("transcribe").focus();
+    return;
+  }
+  $("audio-options").hidden = true;
+  state.pendingAudio = null;
+  uploadFile(file);
+}
+
 async function uploadFile(file) {
   if (!file) return;
-  const isAudio = /\.(wav|mp3|flac|ogg|m4a|aac|aiff|aif|wma)$/i.test(file.name);
+  const isAudio = AUDIO_RE.test(file.name);
   $("dropzone").classList.add("busy");
   $("upload-progress").hidden = false;
   setStatus($("upload-status"),
@@ -208,6 +238,8 @@ async function uploadFile(file) {
   } finally {
     $("dropzone").classList.remove("busy");
     $("upload-progress").hidden = true;
+    $("audio-options").hidden = true;
+    state.pendingAudio = null;
   }
 }
 
@@ -498,6 +530,8 @@ async function runArrange() {
     transpose: Number($("transpose").value),
     tempo: Number($("tempo").value) || null,
     include_lyrics: $("include-lyrics").checked,
+    lyrics: $("lyrics").value.trim() || null,
+    lyrics_all_voices: $("lyrics-all-voices").checked,
     bars: state.bars.map((b) => ({
       index: b.index,
       style: b.style,
@@ -916,7 +950,97 @@ function renderCommandExamples() {
     : "Understood by a built-in grammar — no AI needed.";
 }
 
+
+// ────────────────────────────────────────────────────────────── pdf ──
+
+let pdfLibsLoaded = null;
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const tag = document.createElement("script");
+    tag.src = src;
+    tag.onload = resolve;
+    tag.onerror = () => reject(new Error(`could not load ${src}`));
+    document.head.append(tag);
+  });
+}
+
+function ensurePdfLibs() {
+  if (!pdfLibsLoaded) {
+    // Sequential: svg2pdf registers itself onto jsPDF, so order matters.
+    pdfLibsLoaded = PDF_SCRIPTS.reduce(
+      (chain, src) => chain.then(() => loadScript(src)), Promise.resolve(),
+    ).catch((error) => { pdfLibsLoaded = null; throw error; });
+  }
+  return pdfLibsLoaded;
+}
+
+/**
+ * Export the score as a real, multi-page vector PDF.
+ *
+ * No PDF engine is installed locally, so the score is re-engraved offscreen at
+ * A4 — OSMD paginates it properly rather than producing one unreadably long
+ * strip — and each page's SVG is drawn into the document as vectors, which
+ * keeps it sharp and printable. The on-screen score is left untouched.
+ */
+async function exportPdf() {
+  const button = $("download-pdf");
+  if (button.disabled || !state.session) return;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "Building…";
+
+  let host = null;
+  try {
+    await ensurePdfLibs();
+    const musicxml = await (await fetch($("download-xml").href)).text();
+
+    host = document.createElement("div");
+    host.style.cssText = "position:absolute;left:-99999px;top:0;width:1000px;";
+    document.body.append(host);
+
+    const printer = new opensheetmusicdisplay.OpenSheetMusicDisplay(host, {
+      autoResize: false, backend: "svg", drawTitle: true,
+      drawPartNames: true, pageFormat: "A4_P",
+    });
+    await printer.load(musicxml);
+    printer.render();
+
+    const pages = [...host.querySelectorAll("svg")];
+    if (!pages.length) throw new Error("nothing was engraved");
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: "p", unit: "pt", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+
+    for (let i = 0; i < pages.length; i++) {
+      if (i) doc.addPage();
+      const box = pages[i].getBoundingClientRect();
+      const scale = Math.min(pageWidth / box.width, pageHeight / box.height);
+      await doc.svg(pages[i], {
+        x: (pageWidth - box.width * scale) / 2,
+        y: 0,
+        width: box.width * scale,
+        height: box.height * scale,
+      });
+    }
+
+    const stem = (state.session.title || "arrangement").replace(/[^\w \-]/g, "_");
+    doc.save(`${stem} (${$("ensemble").value}).pdf`);
+    button.textContent = `${pages.length} page${pages.length === 1 ? "" : "s"} \u2713`;
+    setTimeout(() => { button.textContent = original; }, 2200);
+  } catch (error) {
+    setStatus($("score-status"), `PDF export failed: ${error.message}`, "error");
+    button.textContent = original;
+  } finally {
+    host?.remove();
+    button.disabled = false;
+  }
+}
+
 // ───────────────────────────────────────────────────────── wiring ──
+
 
 
 function installUpload() {
@@ -928,7 +1052,7 @@ function installUpload() {
     if (event.key === "Enter" || event.key === " ") { event.preventDefault(); input.click(); }
   });
   input.addEventListener("change", () => {
-    if (input.files.length) uploadFile(input.files[0]);
+    if (input.files.length) chooseFile(input.files[0]);
     input.value = "";
   });
 
@@ -939,7 +1063,15 @@ function installUpload() {
     dropzone.addEventListener(name, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); });
   }
   dropzone.addEventListener("drop", (event) => {
-    if (event.dataTransfer.files.length) uploadFile(event.dataTransfer.files[0]);
+    if (event.dataTransfer.files.length) chooseFile(event.dataTransfer.files[0]);
+  });
+
+  $("transcribe").addEventListener("click", () => {
+    if (state.pendingAudio) uploadFile(state.pendingAudio);
+  });
+  $("cancel-audio").addEventListener("click", () => {
+    state.pendingAudio = null;
+    $("audio-options").hidden = true;
   });
 
   for (const button of document.querySelectorAll("[data-example]")) {
@@ -949,7 +1081,7 @@ function installUpload() {
       try {
         const response = await fetch(`/samples/${name}`);
         if (!response.ok) throw new Error(`example not found (${response.status})`);
-        await uploadFile(new File([await response.blob()], name));
+        chooseFile(new File([await response.blob()], name));
       } catch (error) {
         setStatus($("upload-status"), error.message, "error");
       }
@@ -967,6 +1099,46 @@ function installControls() {
   for (const id of ["ensemble", "transpose", "tempo", "include-lyrics"]) {
     $(id).addEventListener("change", () => scheduleArrange());
   }
+
+  $("download-pdf").addEventListener("click", exportPdf);
+
+  let lyricsTimer = null;
+  for (const id of ["lyrics", "lyrics-all-voices"]) {
+    $(id).addEventListener("input", () => {
+      clearTimeout(lyricsTimer);
+      lyricsTimer = setTimeout(() => scheduleArrange(0), LYRICS_DEBOUNCE_MS);
+    });
+  }
+
+  // Chords per bar re-runs the harmonic analysis, so it goes back to the
+  // server rather than being applied client-side like the other settings.
+  $("chords-per-bar").addEventListener("change", async () => {
+    if (!state.session) return;
+    $("sync-state").dataset.state = "working";
+    const styles = state.bars.map((b) => b.style);
+    const overrides = state.bars.map((b) => b.chordOverride);
+    const form = new FormData();
+    form.append("session_id", state.session.session_id);
+    form.append("chords_per_bar", $("chords-per-bar").value);
+    try {
+      const analysis = await api("/api/reanalyze", { method: "POST", body: form });
+      state.session = analysis;
+      analysis.bars.forEach((bar, index) => {
+        if (!state.bars[index]) return;
+        state.bars[index].chord = bar.chord;
+        state.bars[index].roman = bar.roman;
+        // Keep the user's own choices across a re-analysis.
+        state.bars[index].style = styles[index] ?? state.bars[index].style;
+        state.bars[index].chordOverride = overrides[index] ?? "";
+        updateBarCell(index);
+      });
+      updateSelectionUi();
+      scheduleArrange(0);
+    } catch (error) {
+      $("sync-state").dataset.state = "error";
+      setStatus($("score-status"), error.message, "error");
+    }
+  });
 
   $("mode-simple").addEventListener("click", () => setMode("simple"));
   $("mode-pro").addEventListener("click", () => setMode("pro"));

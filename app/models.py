@@ -100,6 +100,16 @@ class ArrangeRequest(BaseModel):
     transpose: int = Field(default=0, ge=-12, le=12)
     tempo: float | None = None
     include_lyrics: bool = True
+    lyrics: str | None = Field(
+        default=None,
+        description="Words to sing. Space separates words, hyphen splits a word "
+                    "across notes: 'A-ma-zing grace how sweet the sound'.",
+    )
+    lyrics_all_voices: bool = Field(
+        default=False,
+        description="Put the words under every part, not just the melody. Only "
+                    "applies where a backing chord lands on a melody note.",
+    )
 
 
 class ArrangeResponse(BaseModel):

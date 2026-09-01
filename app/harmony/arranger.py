@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from ..analysis import BarHarmony, Segment
+from ..lyrics import Syllable, fit as fit_lyrics
 from ..models import MelodyNote, SourceScore
 from ..theory import ChordSpec, KeyContext
 from .styles import DEFAULT_STYLE, Ensemble, Style, get_style
@@ -23,6 +24,7 @@ class VoiceEvent:
     duration: float
     pitch: int | None  # None means a rest
     lyric: str | None = None
+    syllabic: str | None = None  # MusicXML hyphenation for split words
     tied_from_previous: bool = False
 
 
@@ -184,6 +186,8 @@ def build_arrangement(
     default_style: str = DEFAULT_STYLE,
     transpose: int = 0,
     include_lyrics: bool = True,
+    lyrics: str | None = None,
+    lyrics_all_voices: bool = False,
 ) -> Arrangement:
     warnings: list[str] = []
     melody_voice = ensemble.voices[ensemble.melody_index]
@@ -219,6 +223,19 @@ def build_arrangement(
             f"{out_of_range} melody note(s) fall outside a comfortable {melody_voice.name} "
             "range even after transposition — consider a different ensemble or transpose setting."
         )
+
+    sung: list[Syllable | None] = []
+    if lyrics:
+        pitched = [n for n in melody if n.pitch is not None]
+        sung, lyric_warnings = fit_lyrics(lyrics, len(pitched))
+        warnings.extend(lyric_warnings)
+        onset_syllable = {
+            round(note.offset, 6): syllable
+            for note, syllable in zip(pitched, sung)
+            if syllable is not None
+        }
+    else:
+        onset_syllable = {}
 
     key_shifted = replace(key, tonic_pc=(key.tonic_pc + transpose) % 12) if transpose else key
 
@@ -271,6 +288,15 @@ def build_arrangement(
             pitches = _voice_slot(chord, slot.melody_pitch, ensemble, style, previous, key_shifted)
             previous = pitches
             lyric = style.syllable if (announce_syllable and slot_index == 0) else None
+            syllabic = None
+            if lyrics_all_voices:
+                # Only where a backing chord is struck exactly on a melody note
+                # can the parts share its word; a held pad cannot.
+                word = onset_syllable.get(round(slot.start, 6))
+                if word is not None:
+                    lyric, syllabic = word.text, word.syllabic
+                else:
+                    lyric = None
             for voice_index in range(ensemble.size):
                 if voice_index == ensemble.melody_index:
                     continue
@@ -280,10 +306,11 @@ def build_arrangement(
                         duration=slot.duration,
                         pitch=pitches[voice_index],
                         lyric=lyric,
+                        syllabic=syllabic,
                     )
                 )
 
-    parts[ensemble.melody_index] = _melody_events(melody, include_lyrics)
+    parts[ensemble.melody_index] = _melody_events(melody, include_lyrics, sung)
 
     for index in range(len(parts)):
         parts[index] = _fill_and_merge(parts[index])
@@ -324,17 +351,30 @@ def _voice_slot(
     return voice_chord(chord, melody_pitch, ensemble, style, previous)
 
 
-def _melody_events(melody: list[MelodyNote], include_lyrics: bool) -> list[VoiceEvent]:
+def _melody_events(
+    melody: list[MelodyNote],
+    include_lyrics: bool,
+    sung: list[Syllable | None],
+) -> list[VoiceEvent]:
+    """The tune itself. Typed lyrics win over any words the source file carried."""
     events: list[VoiceEvent] = []
+    index = 0
     for note in melody:
         if note.pitch is None:
             continue
+        syllable = sung[index] if index < len(sung) else None
+        index += 1
+        if syllable is not None:
+            lyric, syllabic = syllable.text, syllable.syllabic
+        else:
+            lyric, syllabic = (note.lyric if include_lyrics else None), None
         events.append(
             VoiceEvent(
                 offset=note.offset,
                 duration=note.duration,
                 pitch=note.pitch,
-                lyric=note.lyric if include_lyrics else None,
+                lyric=lyric,
+                syllabic=syllabic,
                 tied_from_previous=note.tied_from_previous,
             )
         )

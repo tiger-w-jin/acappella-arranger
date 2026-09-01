@@ -294,6 +294,8 @@ def arrange(request: ArrangeRequest) -> ArrangeResponse:
         default_style=request.default_style,
         transpose=request.transpose,
         include_lyrics=request.include_lyrics,
+        lyrics=request.lyrics,
+        lyrics_all_voices=request.lyrics_all_voices,
     )
 
     try:

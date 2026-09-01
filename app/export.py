@@ -147,7 +147,8 @@ def _fill_measure(
             continue
         item = _make_note(event.pitch, duration, key)
         if event.lyric:
-            item.lyric = event.lyric
+            # syllabic drives the hyphens joining a word split across notes.
+            item.lyrics = [note.Lyric(text=event.lyric, syllabic=event.syllabic or "single")]
         if event.tied_from_previous:
             item.tie = tie.Tie("stop")
         measure.insert(event.offset - bar_start, item)
