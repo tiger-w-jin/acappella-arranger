@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A Cappella Arranger</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <h1>A Cappella Arranger</h1>
+  <p class="tagline">Upload a score or a recording, choose a harmony style for every bar, and export a singable arrangement.</p>
+</header>
+
+<main>
+
+  <!-- Step 1: upload -->
+  <section id="upload-panel" class="card">
+    <h2><span class="step">1</span> Upload a piece</h2>
+
+    <div id="dropzone" tabindex="0" role="button" aria-label="Choose or drop a file">
+      <strong>Drop a file here, or click to browse</strong>
+      <span class="hint" id="accepted-types">Scores: MusicXML, MIDI, ABC &nbsp;·&nbsp; Audio: WAV, MP3, FLAC, M4A, OGG</span>
+      <input type="file" id="file-input" hidden>
+    </div>
+
+    <p class="hint examples">
+      No file handy? Try
+      <button type="button" class="link" data-example="twinkle.musicxml">a notated melody</button>
+      or
+      <button type="button" class="link" data-example="twinkle_sung.wav">a recording</button>.
+    </p>
+
+    <details class="options">
+      <summary>Input options</summary>
+      <div class="option-grid">
+        <label>Time signature
+          <select id="time-signature">
+            <option value="4/4" selected>4/4</option>
+            <option value="3/4">3/4</option>
+            <option value="2/4">2/4</option>
+            <option value="6/8">6/8</option>
+            <option value="2/2">2/2</option>
+          </select>
+          <small>Audio only — scores carry their own.</small>
+        </label>
+        <label>Chords per bar
+          <select id="chords-per-bar">
+            <option value="1">1 (slow harmony)</option>
+            <option value="2" selected>2 (recommended)</option>
+          </select>
+          <small>How often the harmony may change.</small>
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" id="merge-repeats" checked>
+          <span>Merge repeated notes</span>
+          <small>Audio only. Fixes notes split into fragments; turn off if your melody really repeats notes.</small>
+        </label>
+      </div>
+    </details>
+
+    <div id="upload-status" class="status" hidden></div>
+  </section>
+
+  <!-- Step 2: arrange -->
+  <section id="arrange-panel" class="card" hidden>
+    <h2><span class="step">2</span> Shape the arrangement</h2>
+
+    <div id="summary" class="summary"></div>
+    <div id="transcription-note" class="note" hidden></div>
+
+    <div class="controls">
+      <label>Ensemble
+        <select id="ensemble"></select>
+      </label>
+      <label>Default style
+        <select id="default-style"></select>
+      </label>
+      <label>Transpose
+        <select id="transpose"></select>
+      </label>
+      <label>Tempo
+        <input type="number" id="tempo" min="20" max="300" step="1">
+      </label>
+      <label class="checkbox inline">
+        <input type="checkbox" id="include-lyrics" checked>
+        <span>Backing syllables</span>
+      </label>
+    </div>
+
+    <div class="bulk">
+      <span>Apply a style to</span>
+      <select id="bulk-style"></select>
+      <button type="button" id="apply-all" class="secondary">All bars</button>
+      <button type="button" id="apply-selected" class="secondary">Selected bars</button>
+      <button type="button" id="clear-selection" class="ghost">Clear selection</button>
+    </div>
+
+    <p class="hint">Click a bar to select it. Each bar keeps its own style and chord — that is what lets one section be a chorale and the next barbershop.</p>
+
+    <div id="bars" class="bars"></div>
+
+    <div class="actions">
+      <button type="button" id="arrange" class="primary">Create arrangement</button>
+      <span id="arrange-status" class="status inline-status" hidden></span>
+    </div>
+  </section>
+
+  <!-- Step 3: result -->
+  <section id="result-panel" class="card" hidden>
+    <h2><span class="step">3</span> Listen and export</h2>
+
+    <div id="warnings" class="warnings" hidden></div>
+
+    <div class="playback">
+      <midi-player id="player" sound-font="https://storage.googleapis.com/magentadata/js/soundfonts/sgm_plus" visualizer="#viz"></midi-player>
+      <midi-visualizer id="viz" type="piano-roll"></midi-visualizer>
+    </div>
+
+    <div class="actions">
+      <a id="download-xml" class="button primary" download>Download MusicXML</a>
+      <a id="download-midi" class="button secondary" download>Download MIDI</a>
+      <span class="hint">MusicXML opens in MuseScore, Sibelius, Finale or Dorico.</span>
+    </div>
+
+    <div id="score-status" class="status" hidden></div>
+    <div id="score"></div>
+  </section>
+
+</main>
+
+<footer>
+  <span>Runs entirely on your machine. Nothing is uploaded anywhere.</span>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.7/build/opensheetmusicdisplay.min.js"></script>
+<script src="https://cdn.jsdelivr.net/combine/npm/tone@14.7.58,npm/@magenta/music@1.23.1/es6/core.js,npm/focus-visible@5,npm/html-midi-player@1.5.0"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

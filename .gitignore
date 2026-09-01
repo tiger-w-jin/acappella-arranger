@@ -1,0 +1,21 @@
+# Python virtualenv (recreate with ./setup.sh)
+.venv/
+
+# Byte-compiled files and caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Editor and OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Generated arrangements, if you save any into the tree
+*.mid
+*.midi
+out/
