@@ -439,3 +439,49 @@ def test_upload_accepts_a_video(client, tmp_path):
     # A steady sine has no melody to find, so 422 is the honest answer -- what
     # matters is that it is no longer rejected as an unsupported type (415).
     assert response.status_code != 415
+
+
+# ── Cache behaviour ───────────────────────────────────────────────────────
+#
+# A shipped UI change is invisible if the browser keeps serving what it already
+# has. The page had no Cache-Control at all, so a plain reload could show stale
+# markup indefinitely -- which is how a newly added control looked missing.
+
+
+def test_the_page_is_never_cached(client):
+    response = client.get("/")
+    directive = response.headers.get("cache-control", "").lower()
+    assert "no-cache" in directive or "no-store" in directive
+
+
+def test_asset_urls_carry_a_version(client):
+    body = client.get("/").text
+    assert "/static/app.js?v=" in body
+    assert "/static/style.css?v=" in body
+
+
+def test_the_version_changes_when_the_front_end_does(tmp_path, monkeypatch):
+    import app.main as main
+
+    before = main._asset_version()
+    target = main.STATIC_DIR / "app.js"
+    original = target.read_bytes()
+    try:
+        target.write_bytes(original + b"\n// touch\n")
+        assert main._asset_version() != before
+    finally:
+        target.write_bytes(original)
+    assert main._asset_version() == before
+
+
+def test_versioned_assets_are_cacheable(client):
+    response = client.get("/static/app.js")
+    directive = response.headers.get("cache-control", "").lower()
+    assert "max-age" in directive
+
+
+def test_the_page_actually_contains_the_link_loader(client):
+    """The control this whole fix was chasing must be in what the server sends."""
+    body = client.get("/").text
+    assert 'id="url-form"' in body
+    assert 'id="url-input"' in body

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import tempfile
@@ -696,12 +697,54 @@ def favicon() -> Response:
     return Response(status_code=204)
 
 
+def _asset_version() -> str:
+    """A short token that changes whenever the front-end files change.
+
+    Without it the browser is free to keep serving whatever it cached, so a
+    shipped UI change is simply invisible until someone thinks to hard-reload
+    — which is exactly how the "load from a link" box appeared to be missing.
+    """
+    # Hashed from the contents, not the timestamps: a checkout or a redeploy
+    # rewrites mtimes without changing a byte, and busting every client's cache
+    # for that would be pure waste.
+    digest = hashlib.sha256()
+    for name in ("index.html", "app.js", "style.css"):
+        path = STATIC_DIR / name
+        if path.exists():
+            digest.update(name.encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
+
+
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+def index() -> Response:
+    """The page itself is never cached; its assets are, under a versioned URL.
+
+    That combination means one request always sees the current markup, and the
+    heavy files are still cached — just under a new name whenever they change.
+    """
+    version = _asset_version()
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html = html.replace("/static/style.css", f"/static/style.css?v={version}")
+    html = html.replace("/static/app.js", f"/static/app.js?v={version}")
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-cache, must-revalidate", "X-Asset-Version": version},
+    )
 
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+class _VersionedStatic(StaticFiles):
+    """Static files are safe to cache for a long time because their URL carries
+    a version that changes with their content."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
+app.mount("/static", _VersionedStatic(directory=STATIC_DIR), name="static")
 
 if SAMPLES_DIR.is_dir():
     app.mount("/samples", StaticFiles(directory=SAMPLES_DIR), name="samples")
