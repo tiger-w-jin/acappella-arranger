@@ -41,6 +41,7 @@ const PDF_SCRIPTS = [
 const MODE_KEY = "acappella.mode";
 const PROJECT_KEY = "acappella.project";
 const AUTOSAVE_MS = 1200;
+const PROJECT_VERSION = 1;
 
 const state = {
   mode: "simple",       // "simple" | "pro"
@@ -1023,6 +1024,9 @@ async function exportPdf() {
 
   let host = null;
   try {
+    if (typeof opensheetmusicdisplay === "undefined") {
+      throw new Error("the notation library could not be loaded");
+    }
     await ensurePdfLibs();
     const musicxml = await (await fetch($("download-xml").href)).text();
 
@@ -1299,7 +1303,7 @@ function applySoloToPlayer() {
 function projectPayload() {
   if (!state.session) return null;
   return {
-    v: 1,
+    v: PROJECT_VERSION,
     title: state.session.title,
     source_kind: state.session.source_kind,
     tempo: Number($("tempo").value) || state.session.tempo,
@@ -1332,11 +1336,30 @@ function autosave() {
     if (!payload) return;
     try {
       localStorage.setItem(PROJECT_KEY, JSON.stringify({ saved: Date.now(), payload }));
-    } catch { /* quota or private mode; autosave is a convenience, not a promise */ }
+    } catch {
+      // Out of quota, or private mode. Clear our own entry so a later, smaller
+      // save can still succeed, and leave the rest of the app working.
+      try { localStorage.removeItem(PROJECT_KEY); } catch { /* nothing to do */ }
+    }
   }, AUTOSAVE_MS);
 }
 
-async function loadProject(payload) {
+function validateProject(payload) {
+  if (!payload || typeof payload !== "object") throw new Error("not a project file");
+  if (!Array.isArray(payload.bars) || !payload.bars.length) {
+    throw new Error("it has no bars in it");
+  }
+  // A file written by a newer version may use fields this build does not
+  // understand, so say so rather than silently loading half of it.
+  const version = Number(payload.v ?? 0);
+  if (version > PROJECT_VERSION) {
+    throw new Error(`it was saved by a newer version (v${version}); this build reads v${PROJECT_VERSION}`);
+  }
+  return payload;
+}
+
+async function loadProject(rawPayload) {
+  const payload = validateProject(rawPayload);
   const analysis = await api("/api/restore", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1368,7 +1391,14 @@ async function loadProject(payload) {
 function offerRestore() {
   let stored = null;
   try { stored = JSON.parse(localStorage.getItem(PROJECT_KEY) || "null"); } catch { stored = null; }
-  if (!stored?.payload?.bars?.length) return;
+  try {
+    validateProject(stored?.payload);
+  } catch {
+    // Corrupt, hand-edited or from a newer build: drop it rather than offering
+    // to restore something that will fail halfway through.
+    try { localStorage.removeItem(PROJECT_KEY); } catch { /* nothing to do */ }
+    return;
+  }
 
   const when = new Date(stored.saved);
   const banner = $("restore-banner");

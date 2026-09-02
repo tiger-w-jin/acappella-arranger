@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -10,8 +11,9 @@ from collections import OrderedDict
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import llm
@@ -49,6 +51,9 @@ from .theory import KeyContext
 _log = logging.getLogger("acappella")
 
 MAX_UPLOAD_BYTES = 40 * 1024 * 1024
+# Parsing and transcription are CPU-bound, so only a couple run at once; the
+# rest queue instead of thrashing every core and slowing all of them down.
+MAX_CONCURRENT_INGEST = 2
 MAX_SESSIONS = 40
 MAX_ARRANGEMENTS = 80
 
@@ -56,6 +61,51 @@ STATIC_DIR = Path(__file__).parent / "static"
 SAMPLES_DIR = Path(__file__).resolve().parent.parent / "samples"
 
 app = FastAPI(title="A Cappella Arranger", version="1.0")
+
+_INGEST_SLOTS = asyncio.Semaphore(MAX_CONCURRENT_INGEST)
+
+
+# --------------------------------------------------------------------------
+# Error handling
+# --------------------------------------------------------------------------
+
+
+def _field_path(error: dict) -> str:
+    parts = [str(p) for p in error.get("loc", ()) if p not in ("body", "query", "form")]
+    return ".".join(parts) or "request"
+
+
+@app.exception_handler(RequestValidationError)
+def on_validation_error(request: Request, error: RequestValidationError) -> JSONResponse:
+    """Report what was wrong without echoing what was sent.
+
+    FastAPI's default handler includes the offending input, which is both a
+    way to reflect caller-controlled data back and, for a value like infinity,
+    impossible to serialise -- a `{"tempo": Infinity}` body turned into a 500
+    with a stack trace rather than a clean rejection.
+    """
+    problems = [
+        {"field": _field_path(item), "problem": item.get("msg", "invalid value")}
+        for item in error.errors()[:10]
+    ]
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "; ".join(f"{p['field']}: {p['problem']}" for p in problems)
+                      or "The request was not valid.",
+            "problems": problems,
+        },
+    )
+
+
+@app.exception_handler(Exception)
+def on_unexpected_error(request: Request, error: Exception) -> JSONResponse:
+    """Never let an internal failure reach the client as a stack trace."""
+    _log.exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Something went wrong handling that request."},
+    )
 
 
 @dataclass
@@ -182,11 +232,14 @@ def _analysis_response(session_id: str, session: Session) -> AnalysisResponse:
 @app.post("/api/upload", response_model=AnalysisResponse)
 async def upload(
     file: UploadFile = File(...),
-    beats: int = Form(4),
-    beat_type: int = Form(4),
-    chords_per_bar: int = Form(2),
+    # A non-positive `beats` made the bar-layout walk never advance, appending
+    # to a list until the process died -- one request was enough to take the
+    # server down, so these are bounded rather than trusted.
+    beats: int = Form(4, ge=1, le=32),
+    beat_type: int = Form(4, ge=1, le=64),
+    chords_per_bar: int = Form(2, ge=1, le=4),
     merge_repeats: bool = Form(True),
-    harmony_source: str = Form("auto"),
+    harmony_source: str = Form("auto", max_length=16),
 ) -> AnalysisResponse:
     filename = file.filename or "upload"
     payload = await file.read()
@@ -210,19 +263,28 @@ async def upload(
             target.write(payload)
 
         title_hint = Path(filename).stem.replace("_", " ").replace("-", " ").strip()
-        try:
+
+        def read_it():
             if is_audio_file(filename):
-                source = transcribe_audio(
+                return transcribe_audio(
                     temp_path,
                     title_hint=title_hint,
                     beats=beats,
                     beat_type=beat_type,
                     merge_repeats=merge_repeats,
                 )
-            else:
-                source = parse_score_file(temp_path, title_hint=title_hint)
+            return parse_score_file(temp_path, title_hint=title_hint)
+
+        try:
+            # Transcription is seconds of CPU work. Left on the event loop it
+            # stalls every other request, health checks included, which is how
+            # a container gets killed for being unresponsive.
+            async with _INGEST_SLOTS:
+                source = await asyncio.to_thread(read_it)
         except HTTPException:
             raise
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
         except Exception as error:
             _log.exception("failed to read %s", filename)
             raise HTTPException(422, f"Could not read this file: {error}") from error
@@ -251,9 +313,9 @@ async def upload(
 
 @app.post("/api/reanalyze", response_model=AnalysisResponse)
 def reanalyze(
-    session_id: str = Form(...),
-    chords_per_bar: int = Form(2),
-    harmony_source: str = Form("auto"),
+    session_id: str = Form(..., max_length=64),
+    chords_per_bar: int = Form(2, ge=1, le=4),
+    harmony_source: str = Form("auto", max_length=16),
 ) -> AnalysisResponse:
     """Redo the chord analysis at a different harmonic rhythm."""
     session: Session | None = SESSIONS.fetch(session_id)
@@ -292,6 +354,7 @@ def arrange(request: ArrangeRequest) -> ArrangeResponse:
 
     for spec in request.bars:
         if not 0 <= spec.index < len(harmony):
+            warnings.append(f"Bar {spec.index + 1} is not in this piece, so it was skipped.")
             continue
         if spec.style:
             if spec.style not in STYLES:
@@ -406,11 +469,17 @@ def fit(request: FitRequest) -> FitResponse:
     if session is None:
         raise HTTPException(404, "Session expired. Please upload the file again.")
 
+    # Every combination is a full arrangement, so the cost is
+    # ensembles x transpositions x bars. Narrow the key search on long pieces
+    # rather than letting one request occupy a worker for a minute.
+    bar_count = len(session.source.bars)
+    span = 6 if bar_count <= 64 else (3 if bar_count <= 256 else 1)
     ranked = find_fit(
         session.source, session.key, session.harmony, {},
         default_style=request.default_style,
         ensembles=request.ensembles,
         keep_key=request.keep_key,
+        transpose_range=span,
     )
     if not ranked:
         return FitResponse(best=None)

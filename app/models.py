@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from typing import Annotated
+
 from pydantic import BaseModel, Field
 
 DEFAULT_STYLE_ID = "satb_chorale"
+
+# Ceilings on anything a caller controls. Without them a single request can
+# make the server do unbounded work: a 1 MB lyric, a 5000-bar project, or a
+# tempo of infinity that only failed at JSON encoding time, as a 500.
+MAX_BARS = 1000
+MAX_TEXT = 20_000
+MAX_COMMAND = 2_000
 
 
 @dataclass
@@ -99,10 +108,11 @@ class AnalysisResponse(BaseModel):
 class BarSpec(BaseModel):
     """Per-bar user overrides."""
 
-    index: int
+    index: int = Field(ge=0, lt=MAX_BARS)
     style: str | None = None
     chord: str | None = Field(
-        default=None, description="Override chord symbol, e.g. 'Ab7' or 'F#m7'."
+        default=None, max_length=32,
+        description="Override chord symbol, e.g. 'Ab7' or 'F#m7'.",
     )
 
 
@@ -110,12 +120,15 @@ class ArrangeRequest(BaseModel):
     session_id: str
     ensemble: str = "satb"
     default_style: str = "satb_chorale"
-    bars: list[BarSpec] = Field(default_factory=list)
+    bars: list[BarSpec] = Field(default_factory=list, max_length=MAX_BARS)
     transpose: int = Field(default=0, ge=-12, le=12)
-    tempo: float | None = None
+    # allow_inf_nan=False: an infinite tempo otherwise reached JSON encoding and
+    # failed there with a 500 rather than a clean rejection.
+    tempo: Annotated[float, Field(gt=0, le=400, allow_inf_nan=False)] | None = None
     include_lyrics: bool = True
     lyrics: str | None = Field(
         default=None,
+        max_length=MAX_TEXT,
         description="Words to sing. Space separates words, hyphen splits a word "
                     "across notes: 'A-ma-zing grace how sweet the sound'.",
     )
@@ -144,8 +157,11 @@ class ArrangeResponse(BaseModel):
 
 class CommandRequest(BaseModel):
     session_id: str
-    text: str = Field(description="A typed instruction, e.g. 'bars 9-16 barbershop'.")
-    tempo: float | None = Field(
+    text: str = Field(
+        max_length=MAX_COMMAND,
+        description="A typed instruction, e.g. 'bars 9-16 barbershop'.",
+    )
+    tempo: Annotated[float, Field(gt=0, le=400, allow_inf_nan=False)] | None = Field(
         default=None, description="Current tempo, so 'faster' has something to work from."
     )
 
@@ -188,27 +204,28 @@ class FitResponse(BaseModel):
 
 
 class ProjectBar(BaseModel):
-    beats: int
-    beat_type: int
-    length: float
-    melody: list[list[float | None]]
-    chord: str
-    roman: str
+    beats: int = Field(ge=1, le=32)
+    beat_type: int = Field(ge=1, le=64)
+    # A zero-length bar would place every later bar on top of it.
+    length: Annotated[float, Field(gt=0, le=64, allow_inf_nan=False)]
+    melody: list[list[float | None]] = Field(max_length=512)
+    chord: str = Field(default="", max_length=32)
+    roman: str = Field(default="", max_length=32)
 
 
 class RestoreRequest(BaseModel):
     """Enough of a project to rebuild a session without the original file."""
 
-    title: str = "Restored project"
-    source_kind: str = "score"
-    tempo: float = 96.0
-    key: str | None = None
-    bars: list[ProjectBar]
+    title: str = Field(default="Restored project", max_length=200)
+    source_kind: str = Field(default="score", max_length=16)
+    tempo: Annotated[float, Field(gt=0, le=400, allow_inf_nan=False)] = 96.0
+    key: str | None = Field(default=None, max_length=32)
+    bars: list[ProjectBar] = Field(max_length=MAX_BARS)
 
 
 class HyphenateRequest(BaseModel):
-    text: str
-    lang: str = "en"
+    text: str = Field(max_length=MAX_TEXT)
+    lang: str = Field(default="en", max_length=16)
 
 
 class HyphenateResponse(BaseModel):

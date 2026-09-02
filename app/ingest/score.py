@@ -12,6 +12,10 @@ from .harmony_source import has_multiple_parts, read_chord_symbols, read_texture
 
 SCORE_SUFFIXES = {".xml", ".musicxml", ".mxl", ".mid", ".midi", ".abc", ".krn"}
 
+# Past this the UI is unusable and every arrange takes many seconds, so it is
+# better to refuse clearly than to appear to hang.
+MAX_BARS = 1000
+
 
 def _to_float(value) -> float:
     if isinstance(value, Fraction):
@@ -122,8 +126,13 @@ def parse_score_file(path: str, title_hint: str = "") -> SourceScore:
         title = str(score.metadata.title)
     title = title or title_hint or "Untitled"
 
+    # Prefer the barlines the file already has: they carry pickups and any
+    # mid-piece metre change, both of which are lost by re-barring everything
+    # to whatever time signature happened to come first.
     pickup = _detect_pickup(melody_part, bar_quarters)
-    bars = layout_bars(events, bar_quarters, time_sig.numerator, time_sig.denominator, pickup)
+    bars = bars_from_measures(melody_part, events)
+    if bars is None:
+        bars = layout_bars(events, bar_quarters, time_sig.numerator, time_sig.denominator, pickup)
 
     # What the file says about its own harmony, in order of how much it is worth
     # believing: written chord symbols first, then the real multi-part texture.
@@ -139,6 +148,85 @@ def parse_score_file(path: str, title_hint: str = "") -> SourceScore:
         source_kind="midi" if path.lower().endswith((".mid", ".midi")) else "score",
         pickup_quarters=pickup,
     )
+
+
+def bars_from_measures(part: stream.Part, events: list[MelodyNote]) -> list[Bar] | None:
+    """Use the score's own measures, so a metre change survives ingest.
+
+    Returns None when the part has no usable measures, leaving the caller to
+    fall back to slicing at a fixed bar length.
+    """
+    measures = [m for m in part.getElementsByClass(stream.Measure)]
+    if len(measures) < 1:
+        return None
+
+    bounds: list[tuple[float, float, int, int]] = []
+    for measure in measures:
+        start = _to_float(measure.offset)
+        length = _to_float(measure.duration.quarterLength)
+        if length <= 0:
+            continue
+        signature = measure.timeSignature or measure.getContextByClass(meter.TimeSignature)
+        beats = signature.numerator if signature else 4
+        beat_type = signature.denominator if signature else 4
+        bounds.append((start, length, beats, beat_type))
+
+    if not bounds:
+        return None
+    if len(bounds) > MAX_BARS:
+        raise ValueError(
+            f"This piece has more than {MAX_BARS} bars, which is beyond what the "
+            "arranger handles. Try a shorter excerpt."
+        )
+
+    bars = [
+        Bar(index=i, offset=start, length=length, beats=beats, beat_type=beat_type)
+        for i, (start, length, beats, beat_type) in enumerate(bounds)
+    ]
+
+    # Anything sounding past the final barline (music21 occasionally reports a
+    # short last measure) still needs somewhere to live.
+    last = bars[-1]
+    total = max((e.end for e in events), default=0.0)
+    if total > last.offset + last.length + 1e-6:
+        last.length = total - last.offset
+
+    _place_notes(bars, events)
+    return bars
+
+
+def _place_notes(bars: list[Bar], events: list[MelodyNote]) -> None:
+    """Drop each note into its bar, splitting anything crossing a barline."""
+    for event in events:
+        if event.pitch is None:
+            continue
+        start = event.offset
+        remaining = event.duration
+        is_continuation = False
+        while remaining > 1e-6:
+            bar = _bar_at(bars, start)
+            if bar is None:
+                break
+            bar_end = bar.offset + bar.length
+            span = min(remaining, bar_end - start)
+            if span <= 1e-6:
+                break
+            bar.notes.append(
+                MelodyNote(
+                    pitch=event.pitch,
+                    offset=start,
+                    duration=round(span, 6),
+                    lyric=event.lyric if not is_continuation else None,
+                    syllabic=event.syllabic if not is_continuation else None,
+                    tied_from_previous=is_continuation,
+                )
+            )
+            is_continuation = True
+            start += span
+            remaining -= span
+
+    for bar in bars:
+        bar.notes.sort(key=lambda n: n.offset)
 
 
 def _detect_pickup(part: stream.Part, bar_quarters: float) -> float:
@@ -180,6 +268,13 @@ def layout_bars(
     pickup: float = 0.0,
 ) -> list[Bar]:
     """Slice a flat note list into bars, splitting notes that straddle barlines."""
+    # A non-positive bar length would make the boundary walk below never
+    # advance, appending forever until the process dies. Callers are validated,
+    # but this is the loop that would hang, so it defends itself.
+    if not bar_quarters or bar_quarters <= 0:
+        bar_quarters = 4.0
+        beats, beat_type = 4, 4
+
     if not events:
         return [Bar(index=0, offset=0.0, length=bar_quarters, beats=beats, beat_type=beat_type)]
 
@@ -187,8 +282,15 @@ def layout_bars(
     boundaries = [0.0]
     if pickup > 0:
         boundaries.append(pickup)
+    # Bound the walk as well: a corrupt file reporting an enormous duration
+    # should be refused, not turned into millions of empty bars.
     while boundaries[-1] < total - 1e-6:
         boundaries.append(boundaries[-1] + bar_quarters)
+        if len(boundaries) > MAX_BARS + 2:
+            raise ValueError(
+                f"This piece would need more than {MAX_BARS} bars, which is beyond "
+                "what the arranger handles. Try a shorter excerpt."
+            )
 
     bars: list[Bar] = []
     for index in range(len(boundaries) - 1 if len(boundaries) > 1 else 1):

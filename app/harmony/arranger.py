@@ -318,6 +318,7 @@ def build_arrangement(
     for index in range(len(parts)):
         parts[index] = _fill_and_merge(parts[index])
 
+    warnings.extend(_clamp_to_midi(parts))
     warnings.extend(_range_warnings(parts, ensemble))
 
     bounds = [(bar.offset, bar.length) for bar in score.bars]
@@ -397,6 +398,35 @@ def _bar_index_at(bounds: list[tuple[float, float]], offset: float) -> int:
         if start - 1e-6 <= offset < start + length - 1e-6:
             return index
     return max(0, len(bounds) - 1)
+
+
+# MIDI has no notes outside 0-127, and neither does any singer. A source with a
+# stray extreme pitch -- badly exported MIDI, a percussion track read as notes
+# -- could otherwise drive voices to negative numbers, which is not merely
+# unsingable but invalid in both MIDI and MusicXML.
+MIDI_LOW, MIDI_HIGH = 0, 127
+
+
+def _clamp_to_midi(parts: list[list[VoiceEvent]]) -> list[str]:
+    """Fold any pitch outside the MIDI range back by octaves, and say so."""
+    moved = 0
+    for events in parts:
+        for event in events:
+            if event.pitch is None:
+                continue
+            original = event.pitch
+            while event.pitch < MIDI_LOW:
+                event.pitch += 12
+            while event.pitch > MIDI_HIGH:
+                event.pitch -= 12
+            if event.pitch != original:
+                moved += 1
+    if not moved:
+        return []
+    return [
+        f"{moved} note(s) fell outside the MIDI range and were folded back by "
+        "octaves — check the source for stray very high or very low notes."
+    ]
 
 
 def _range_warnings(parts: list[list[VoiceEvent]], ensemble: Ensemble) -> list[str]:

@@ -265,7 +265,8 @@ app/
     voicing.py       the voicing search and the non-search generators
     arranger.py      per-bar styles -> a complete multi-part arrangement
   static/            the web UI (no build step, vanilla JS)
-tests/               390 tests: pipeline, styles x ensembles, audio, commands, lyrics, sources
+tests/               453 tests: pipeline, styles x ensembles, audio, commands,
+                     lyrics, sources, robustness
 samples/             a melody, a 32-bar tune, a four-part chorale and a recording
 ```
 
@@ -286,6 +287,37 @@ command grammar, lyric parsing, English syllabification, the alignment layout,
 the MIDI lyric track's contents, and the validation that stops a bad LLM
 response reaching the arranger.
 
+## Robustness
+
+The app is fed files it did not create, so the input path assumes nothing.
+Everything below was found by throwing bad input at the running code, not by
+reading it:
+
+- **Bounded work.** Every caller-controlled value has a ceiling — bar count,
+  lyric and command length, tempo, transposition, project size. A `beats=0`
+  upload used to send the bar-layout walk into a loop that appended until the
+  process died; one request was enough to take the server down. The loop now
+  defends itself as well as being validated at the edge.
+- **Valid output.** A source containing a stray extreme pitch — badly exported
+  MIDI, a percussion track read as notes — could drive backing voices to
+  negative MIDI numbers, which is unsingable *and* invalid in both MIDI and
+  MusicXML. Pitches are folded back by octaves and the fact is reported.
+- **The score's own barlines.** A metre change mid-piece used to be discarded
+  and everything re-barred to whatever time signature came first, silently
+  moving the music. The file's own measures are used when it has them.
+- **Errors say what is wrong, not what was sent.** A `{"tempo": Infinity}` body
+  produced a 500 with a stack trace and absolute paths, because the validation
+  error echoed the value back and then failed to serialise it. Validation
+  errors now name the field and the problem, and nothing reflects request data
+  or internals to the caller.
+- **Ingest is off the event loop.** Parsing and transcription are seconds of
+  CPU work; run inline in an async handler they stalled every other request,
+  health checks included. They run in a thread pool with a concurrency cap:
+  four concurrent transcriptions now leave health responsive at 66 ms.
+- **Degenerate input is ordinary input.** Empty scores, rests only, one note,
+  one pitch throughout, fully chromatic melodies, tuplets, 5/8 and 7/8, and
+  hostile chord symbols are all covered by tests.
+
 ## Known limits
 
 - Scanned sheet music (PDF or images) is not supported as *input*; optical
@@ -295,3 +327,5 @@ response reaching the arranger.
 - Audio transcription follows one melodic line. Dense mixes transcribe poorly —
   a solo voice or lead instrument works best.
 - Time signature and pickup detection come from notated input only.
+- Tempo changes mid-piece are not followed; the first tempo applies throughout.
+- Pieces beyond 1000 bars are refused rather than accepted and left to crawl.
