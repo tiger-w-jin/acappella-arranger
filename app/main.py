@@ -19,10 +19,11 @@ from fastapi.staticfiles import StaticFiles
 from . import llm
 from .analysis import BarHarmony, Segment, analyze, infer_harmony, parse_chord_symbol
 from .commands import examples as command_examples, parse_command
-from .export import to_midi_bytes, to_musicxml, to_practice_midi
+from .export import to_melody_midi, to_midi_bytes, to_musicxml, to_practice_midi
 from .harmony.arranger import build_arrangement
 from .harmony.styles import DEFAULT_STYLE, ENSEMBLES, STYLES, get_ensemble
 from .ingest.audio import AUDIO_SUFFIXES, VIDEO_SUFFIXES, is_audio_file, transcribe_audio
+from .ingest.fetch import FetchError, fetch_media
 from .ingest.score import SCORE_SUFFIXES, is_score_file, parse_score_file
 from .models import (
     AnalysisResponse,
@@ -31,6 +32,7 @@ from .models import (
     BarAnalysis,
     CommandRequest,
     CommandResponse,
+    FetchRequest,
     FitOption,
     FitRequest,
     FitResponse,
@@ -565,6 +567,79 @@ def restore(request: RestoreRequest) -> AnalysisResponse:
         Session(source=source, key=key, harmony=harmony, chords_per_bar=2, harmony_source=used),
     )
     return _analysis_response(session_id, SESSIONS.fetch(session_id))
+
+
+@app.post("/api/fetch", response_model=AnalysisResponse)
+async def fetch_from_url(request: FetchRequest) -> AnalysisResponse:
+    """Load media from a link the user supplies, then transcribe it as usual.
+
+    The fetch itself is deliberately narrow -- see ingest/fetch.py -- because a
+    server that will retrieve any URL on request is a way to reach whatever it
+    can reach and the caller cannot.
+    """
+    try:
+        # Off the event loop: this makes a network call to a host we do not
+        # control, so its latency must not be the whole server's latency.
+        fetched = await asyncio.to_thread(fetch_media, request.url)
+    except FetchError as error:
+        raise HTTPException(400, str(error)) from error
+    except Exception as error:
+        _log.exception("fetch failed for %s", request.url[:120])
+        raise HTTPException(400, "Could not fetch that link.") from error
+
+    try:
+        title_hint = Path(fetched.filename).stem.replace("_", " ").strip()
+
+        def read_it():
+            if is_audio_file(fetched.filename):
+                return transcribe_audio(
+                    fetched.path,
+                    title_hint=title_hint,
+                    beats=request.beats,
+                    beat_type=request.beat_type,
+                    merge_repeats=request.merge_repeats,
+                )
+            return parse_score_file(fetched.path, title_hint=title_hint)
+
+        try:
+            async with _INGEST_SLOTS:
+                source = await asyncio.to_thread(read_it)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        except Exception as error:
+            _log.exception("could not read fetched %s", fetched.filename)
+            raise HTTPException(422, f"Could not read that file: {error}") from error
+    finally:
+        Path(fetched.path).unlink(missing_ok=True)
+
+    if not source.all_notes:
+        raise HTTPException(422, "No melody notes were found in that file.")
+
+    key, harmony, used = analyze(source, chords_per_bar=request.chords_per_bar)
+    session_id = uuid.uuid4().hex[:12]
+    SESSIONS.put(
+        session_id,
+        Session(source=source, key=key, harmony=harmony,
+                chords_per_bar=request.chords_per_bar, harmony_source=used),
+    )
+    return _analysis_response(session_id, SESSIONS.fetch(session_id))
+
+
+@app.get("/api/session/{session_id}/lead.mid")
+def lead_line_midi(session_id: str) -> Response:
+    """The transcribed lead line on its own, without any harmony around it."""
+    session: Session | None = SESSIONS.fetch(session_id)
+    if session is None:
+        raise HTTPException(404, "Session expired. Please load the piece again.")
+
+    stem = "".join(
+        c if c.isalnum() or c in " -_" else "_" for c in session.source.title
+    ).strip() or "lead"
+    return Response(
+        content=to_melody_midi(session.source, session.key, session.source.title),
+        media_type="audio/midi",
+        headers={"Content-Disposition": f'attachment; filename="{stem} - lead line.mid"'},
+    )
 
 
 @app.post("/api/hyphenate", response_model=HyphenateResponse)

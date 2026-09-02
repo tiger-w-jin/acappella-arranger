@@ -208,6 +208,45 @@ def to_musicxml(arrangement: Arrangement) -> str:
     return raw.decode("utf-8")
 
 
+def to_melody_midi(source, key: KeyContext, title: str = "Lead line") -> bytes:
+    """Just the transcribed lead line, as a single-track MIDI.
+
+    Separate from the arrangement export on purpose: the melody the app pulled
+    out of a recording is useful on its own, to check the transcription or to
+    take into a DAW, without any of the harmony wrapped around it.
+    """
+    from music21.midi.translate import streamToMidiFile
+
+    score = stream.Score()
+    score.insert(0, metadata.Metadata())
+    score.metadata.title = title
+
+    part = stream.Part(id="Lead")
+    part.partName = "Lead"
+    part.insert(0, tempo.MetronomeMark(number=round(source.tempo or 96)))
+
+    first = source.bars[0] if source.bars else None
+    if first:
+        part.insert(0, meter.TimeSignature(f"{first.beats}/{first.beat_type}"))
+
+    cursor = 0.0
+    for bar in source.bars:
+        for melody_note in bar.notes:
+            if melody_note.pitch is None or melody_note.duration <= 0:
+                continue
+            if melody_note.offset > cursor + 1e-6:
+                part.insert(cursor, note.Rest(quarterLength=melody_note.offset - cursor))
+            item = _make_note(melody_note.pitch, melody_note.duration, key)
+            part.insert(melody_note.offset, item)
+            cursor = melody_note.offset + melody_note.duration
+
+    if not list(part.notes):
+        part.insert(0, note.Rest(quarterLength=4.0))
+
+    score.insert(0, part)
+    return streamToMidiFile(score).writestr()
+
+
 def to_practice_midi(arrangement: Arrangement, voice_index: int) -> bytes:
     """MIDI with one part brought forward, for learning that line.
 

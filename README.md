@@ -22,6 +22,26 @@ track is pulled out with ffmpeg) are transcribed to a melody with Spotify's
 [basic-pitch](https://github.com/spotify/basic-pitch), beat-tracked with
 librosa, and quantized onto a bar grid. From there both paths are identical.
 
+**Load from a link.** Paste a direct http(s) link to an audio, video or score
+file and it is fetched and transcribed like an upload — your own hosting, a
+public-domain archive, a Creative Commons recording.
+
+Streaming platforms are refused by name, with the reason: taking audio off
+YouTube, Spotify and the like breaks their terms of use and, for commercial
+music, copyright.
+
+Fetching a URL a caller supplies is server-side request forgery unless it is
+kept narrow, and this app listens on a network interface, so the fetcher only
+accepts http and https, resolves the host and rejects every private, loopback,
+link-local or reserved address it maps to, re-validates each redirect hop
+(a public URL redirecting inward is the usual bypass), caps the download by
+both declared and streamed size, and judges "is this media?" from the URL and
+the declared content type rather than from a filename it derived itself.
+
+**Lead line on its own.** *Lead MIDI* exports just the transcribed melody as a
+single-track MIDI — useful for checking what the transcriber heard, or for
+taking the tune into a DAW without the harmony around it.
+
 **It reads the harmony a file already has.** A lead sheet states its chords and
 a hymn or chorale states them in four parts, so guessing them back from the
 melody would be throwing away the answer and getting a different one. Chord
@@ -259,6 +279,7 @@ app/
   export.py          music21 score -> MusicXML / MIDI / practice tracks
   ingest/
     score.py         MusicXML / MIDI / ABC parsing, bar layout
+    fetch.py         guarded URL fetching (SSRF defence, streaming-site refusal)
     audio.py         basic-pitch transcription and line cleanup
     harmony_source.py  chord symbols and multi-part texture read from the file
   harmony/
@@ -266,8 +287,8 @@ app/
     voicing.py       the voicing search and the non-search generators
     arranger.py      per-bar styles -> a complete multi-part arrangement
   static/            the web UI (no build step, vanilla JS)
-tests/               458 tests: pipeline, styles x ensembles, audio, commands,
-                     lyrics, sources, robustness
+tests/               499 tests: pipeline, styles x ensembles, audio, commands,
+                     lyrics, sources, robustness, fetching
 samples/             a melody, a 32-bar tune, a four-part chorale and a recording
 ```
 
@@ -328,6 +349,8 @@ reading it:
 - Audio transcription follows one melodic line. Dense mixes transcribe poorly —
   a solo voice or lead instrument works best.
 - Video input needs `ffmpeg` on PATH; without it the app says so rather than failing obscurely.
+- Loading from a link needs outbound network access, and only reaches public
+  addresses. There is no extractor for streaming sites and there will not be one.
 - Time signature and pickup detection come from notated input only.
 - Tempo changes mid-piece are not followed; the first tempo applies throughout.
 - Pieces beyond 1000 bars are refused rather than accepted and left to crawl.

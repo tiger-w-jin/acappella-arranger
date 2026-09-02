@@ -26,6 +26,18 @@
       <input type="file" id="file-input" hidden>
     </div>
 
+    <form id="url-form" class="url-row" autocomplete="off">
+      <input type="url" id="url-input" spellcheck="false"
+             placeholder="…or paste a direct link to an audio, video or score file"
+             aria-label="Link to a media file">
+      <button type="submit" class="btn" id="url-go">Load</button>
+    </form>
+    <p class="muted hint url-note">
+      A direct file link — your own hosting, a public-domain archive, a Creative
+      Commons recording. Streaming sites are not supported: taking audio off them
+      breaks their terms and, for commercial music, copyright.
+    </p>
+
     <p class="examples muted">
       Or try
       <button type="button" class="link" data-example="twinkle.musicxml">a short melody</button>,
@@ -111,6 +123,7 @@
       <button type="button" id="download-pdf" class="btn">PDF</button>
       <a id="download-xml" class="btn" download>MusicXML</a>
       <a id="download-midi" class="btn" download>MIDI</a>
+      <a id="download-lead" class="btn" download title="The transcribed lead line on its own">Lead MIDI</a>
     </div>
   </header>
 

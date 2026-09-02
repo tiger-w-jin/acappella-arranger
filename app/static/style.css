@@ -96,6 +96,17 @@ p { margin: 0; }
   0% { margin-left: -35%; } 100% { margin-left: 100%; }
 }
 
+/* ── Load from a link ─────────────────────────────────────────────────── */
+
+.url-row { display: flex; gap: 8px; margin-top: 14px; }
+#url-input {
+  flex: 1 1 auto; min-width: 0; font-size: 13.5px; padding: 9px 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm);
+  color: var(--text);
+}
+#url-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.url-note { margin-top: 8px; text-align: left; max-width: 62ch; }
+
 /* ── Audio pre-flight ─────────────────────────────────────────────────── */
 
 .audio-options {

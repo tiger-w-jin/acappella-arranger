@@ -223,6 +223,14 @@ class RestoreRequest(BaseModel):
     bars: list[ProjectBar] = Field(max_length=MAX_BARS)
 
 
+class FetchRequest(BaseModel):
+    url: str = Field(max_length=2048, description="A direct http(s) link to a media file.")
+    beats: int = Field(default=4, ge=1, le=32)
+    beat_type: int = Field(default=4, ge=1, le=64)
+    chords_per_bar: int = Field(default=2, ge=1, le=4)
+    merge_repeats: bool = True
+
+
 class HyphenateRequest(BaseModel):
     text: str = Field(max_length=MAX_TEXT)
     lang: str = Field(default="en", max_length=16)

@@ -588,6 +588,7 @@ async function runArrange() {
     showWarnings(notices);
 
     state.arrangementId = result.arrangement_id;
+    $("download-lead").href = `/api/session/${state.session.session_id}/lead.mid`;
     $("download-midi").href = `/api/arrangement/${result.arrangement_id}.mid`;
     $("download-xml").href = `/api/arrangement/${result.arrangement_id}.musicxml`;
     $("player").src = state.soloVoice === null
@@ -1438,7 +1439,44 @@ function saveProjectFile() {
   URL.revokeObjectURL(url);
 }
 
+
+// ───────────────────────────────────────────────────── load by link ──
+
+async function loadFromUrl(url) {
+  if (!url.trim()) return;
+  const button = $("url-go");
+  button.disabled = true;
+  $("dropzone").classList.add("busy");
+  $("upload-progress").hidden = false;
+  setStatus($("upload-status"), "Fetching and transcribing — this can take a moment…");
+
+  try {
+    const [beats, beatType] = $("time-signature").value.split("/");
+    const analysis = await api("/api/fetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: url.trim(),
+        beats: Number(beats),
+        beat_type: Number(beatType),
+        chords_per_bar: Number($("chords-per-bar").value) || 2,
+        merge_repeats: $("merge-repeats").checked,
+      }),
+    });
+    applyAnalysis(analysis);
+    setStatus($("upload-status"), "");
+    $("url-input").value = "";
+  } catch (error) {
+    setStatus($("upload-status"), error.message, "error");
+  } finally {
+    button.disabled = false;
+    $("dropzone").classList.remove("busy");
+    $("upload-progress").hidden = true;
+  }
+}
+
 // ───────────────────────────────────────────────────────── wiring ──
+
 
 
 
@@ -1465,6 +1503,11 @@ function installUpload() {
   }
   dropzone.addEventListener("drop", (event) => {
     if (event.dataTransfer.files.length) chooseFile(event.dataTransfer.files[0]);
+  });
+
+  $("url-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadFromUrl($("url-input").value);
   });
 
   $("transcribe").addEventListener("click", () => {
