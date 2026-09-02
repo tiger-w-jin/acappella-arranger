@@ -28,7 +28,12 @@ public-domain archive, a Creative Commons recording.
 
 Streaming platforms are refused by name, with the reason: taking audio off
 YouTube, Spotify and the like breaks their terms of use and, for commercial
-music, copyright.
+music, copyright. A refusal that only says no is a dead end, though, so each
+one names the site and lists the ways to get the same file that do work — the
+platform's own download where one exists (YouTube Studio for your own uploads,
+a Bandcamp purchase, an artist-enabled SoundCloud download), and, whatever the
+site, recording the melody yourself. That last one is not a consolation prize:
+a single clean line transcribes better here than any full mix.
 
 Fetching a URL a caller supplies is server-side request forgery unless it is
 kept narrow, and this app listens on a network interface, so the fetcher only

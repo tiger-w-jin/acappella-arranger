@@ -53,12 +53,110 @@ STREAMING_HOSTS = {
 
 MEDIA_SUFFIXES = AUDIO_SUFFIXES | VIDEO_SUFFIXES | SCORE_SUFFIXES
 
+# Whatever the platform, these two always apply, so every refusal ends with them.
+_UNIVERSAL_STEPS = [
+    "Sing or play the melody and record it — one clean line transcribes far "
+    "better here than any full mix, so this is the app's best input.",
+    "Or paste a direct link to a file you host or have the rights to.",
+]
+
+# How to legitimately obtain a file, per platform. Keyed by registered domain.
+_PLATFORM_GUIDANCE: dict[str, tuple[str, list[str]]] = {
+    "youtube.com": ("YouTube", [
+        "If it is your own upload: YouTube Studio → Content → hover the video "
+        "→ the ⋮ menu → Download. That gives you an MP4 you can drop straight in.",
+    ]),
+    "youtu.be": ("YouTube", [
+        "If it is your own upload: YouTube Studio → Content → hover the video "
+        "→ the ⋮ menu → Download. That gives you an MP4 you can drop straight in.",
+    ]),
+    "bandcamp.com": ("Bandcamp", [
+        "Buying the track on Bandcamp includes an actual download — take the "
+        "WAV or MP3 and upload it here. Some artists offer it free.",
+    ]),
+    "soundcloud.com": ("SoundCloud", [
+        "Some tracks have a Download button the artist has enabled — if this "
+        "one does, use it and upload the file.",
+    ]),
+    "music.apple.com": ("Apple Music", [
+        "Apple Music is streaming only, but the iTunes Store sells the same "
+        "tracks as downloads. A purchased M4A works here.",
+    ]),
+    "itunes.apple.com": ("the iTunes Store", [
+        "A purchased track downloads as an M4A, which this app reads directly.",
+    ]),
+    "vimeo.com": ("Vimeo", [
+        "If it is your own video, or the owner enabled downloads, Vimeo offers "
+        "the file directly — then upload it here.",
+    ]),
+}
+
+# Streaming-only services, where no legitimate file export exists at all.
+_NO_EXPORT = {
+    "spotify.com": "Spotify", "tidal.com": "TIDAL", "deezer.com": "Deezer",
+    "pandora.com": "Pandora", "kkbox.com": "KKBOX", "music.163.com": "NetEase Music",
+    "y.qq.com": "QQ Music", "kugou.com": "Kugou", "netflix.com": "Netflix",
+    "mixcloud.com": "Mixcloud", "audiomack.com": "Audiomack",
+    "bilibili.com": "Bilibili", "dailymotion.com": "Dailymotion",
+    "tiktok.com": "TikTok", "douyin.com": "Douyin", "twitch.tv": "Twitch",
+    "instagram.com": "Instagram", "facebook.com": "Facebook",
+    "twitter.com": "X", "x.com": "X",
+}
+
+
+def _domain_keys(host: str) -> list[str]:
+    """The host and every parent domain, most specific first.
+
+    Lookups walk this rather than testing one "registered domain", because the
+    interesting names are not all two labels: `music.163.com` and `y.qq.com`
+    have their own entries, and a bare last-two-labels rule reduces them to
+    `163.com` and `qq.com` and misses.
+    """
+    labels = host.lower().strip(".").split(".")
+    return [".".join(labels[i:]) for i in range(len(labels))]
+
+
+def _guidance_for(host: str) -> tuple[str, list[str]]:
+    """Name the platform and say how to get the file legitimately."""
+    host = host.lower().strip(".")
+
+    # Most specific name wins, so a per-host entry beats its parent domain's.
+    for key in _domain_keys(host):
+        if key in _PLATFORM_GUIDANCE:
+            platform, steps = _PLATFORM_GUIDANCE[key]
+            return platform, [*steps, *_UNIVERSAL_STEPS]
+        if key in _NO_EXPORT:
+            name = _NO_EXPORT[key]
+            return name, [
+                f"{name} has no way to export a file, so there is no legitimate "
+                "route from a link there. If you own the recording, upload it directly.",
+                *_UNIVERSAL_STEPS,
+            ]
+    return host, list(_UNIVERSAL_STEPS)
+
 _MEDIA_CONTENT_TYPES = ("audio/", "video/", "application/octet-stream")
 _SCORE_CONTENT_TYPES = ("xml", "musicxml", "midi", "application/zip")
 
 
 class FetchError(ValueError):
     """Anything that stops a fetch, phrased for the person who typed the URL."""
+
+
+class StreamingSiteError(FetchError):
+    """A refusal that comes with a route to what the person actually wanted.
+
+    "No" on its own is a dead end when there is usually a legitimate way to get
+    the same file — the site's own download for your own uploads, a purchase
+    that includes one, or simply recording the tune.
+    """
+
+    def __init__(self, platform: str, steps: list[str]):
+        self.platform = platform
+        self.steps = steps
+        super().__init__(
+            f"{platform} does not allow its audio to be downloaded, and for "
+            f"commercial music that is a copyright question too. Here is what does work."
+        )
 
 
 @dataclass
@@ -69,17 +167,11 @@ class Fetched:
     size: int
 
 
-def _registered_domain(host: str) -> str:
-    parts = host.lower().strip(".").split(".")
-    return ".".join(parts[-2:]) if len(parts) >= 2 else host.lower()
-
-
 def _is_streaming_host(host: str) -> bool:
-    host = host.lower().strip(".")
-    return host in STREAMING_HOSTS or _registered_domain(host) in STREAMING_HOSTS
+    return any(key in STREAMING_HOSTS for key in _domain_keys(host))
 
 
-def _addresses_for(host: str) -> list[ipaddress._BaseAddress]:
+def _addresses_for(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     """Every address the host resolves to, so none of them can be a surprise."""
     try:
         infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
@@ -133,12 +225,8 @@ def validate_url(url: str) -> str:
         raise FetchError("That does not look like a complete link.")
 
     if _is_streaming_host(host):
-        raise FetchError(
-            f"“{host}” is a streaming platform, and pulling audio out of one breaks "
-            "its terms of use — and, for commercial music, copyright. Link to a file "
-            "you host or have the rights to, or upload it directly. Recording the "
-            "melody yourself works well and is the app's best input anyway."
-        )
+        platform, steps = _guidance_for(host)
+        raise StreamingSiteError(platform, steps)
 
     _reject_private(host)
     return url

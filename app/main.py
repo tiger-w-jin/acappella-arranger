@@ -24,7 +24,7 @@ from .export import to_melody_midi, to_midi_bytes, to_musicxml, to_practice_midi
 from .harmony.arranger import build_arrangement
 from .harmony.styles import DEFAULT_STYLE, ENSEMBLES, STYLES, get_ensemble
 from .ingest.audio import AUDIO_SUFFIXES, VIDEO_SUFFIXES, is_audio_file, transcribe_audio
-from .ingest.fetch import FetchError, fetch_media
+from .ingest.fetch import FetchError, StreamingSiteError, fetch_media
 from .ingest.score import SCORE_SUFFIXES, is_score_file, parse_score_file
 from .models import (
     AnalysisResponse,
@@ -582,6 +582,13 @@ async def fetch_from_url(request: FetchRequest) -> AnalysisResponse:
         # Off the event loop: this makes a network call to a host we do not
         # control, so its latency must not be the whole server's latency.
         fetched = await asyncio.to_thread(fetch_media, request.url)
+    except StreamingSiteError as error:
+        # A refusal that carries a route to the file, so the UI can show what
+        # to do instead of only what went wrong.
+        raise HTTPException(
+            400,
+            {"detail": str(error), "platform": error.platform, "steps": error.steps},
+        ) from error
     except FetchError as error:
         raise HTTPException(400, str(error)) from error
     except Exception as error:

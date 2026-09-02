@@ -107,6 +107,18 @@ p { margin: 0; }
 #url-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .url-note { margin-top: 8px; text-align: left; max-width: 62ch; }
 
+/* A refusal that has somewhere to send you is help, not a failure, so it takes
+   the accent panel rather than the danger colour. */
+.guidance {
+  margin-top: 12px; padding: 13px 16px; max-width: 62ch; text-align: left;
+  background: var(--surface); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: 0 var(--r) var(--r) 0;
+  font-size: 13px;
+}
+.guidance-lead { color: var(--text); }
+.guidance-steps { margin: 9px 0 0; padding-left: 20px; color: var(--muted); }
+.guidance-steps li + li { margin-top: 5px; }
+
 /* ── Audio pre-flight ─────────────────────────────────────────────────── */
 
 .audio-options {

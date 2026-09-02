@@ -94,11 +94,24 @@ async function api(path, options) {
   const response = await fetch(path, options);
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
+    let guidance = null;
     try {
       const body = await response.json();
-      if (body?.detail) detail = body.detail;
+      if (typeof body?.detail === "string") {
+        detail = body.detail;
+      } else if (body?.detail && typeof body.detail === "object") {
+        // Some refusals carry a route to what the caller wanted. Keep that
+        // structure on the error so the handler can show the way out, rather
+        // than stringifying an object into the status line.
+        detail = body.detail.detail || detail;
+        if (Array.isArray(body.detail.steps) && body.detail.steps.length) {
+          guidance = body.detail;
+        }
+      }
     } catch { /* no JSON body */ }
-    throw new Error(detail);
+    const error = new Error(detail);
+    if (guidance) error.guidance = guidance;
+    throw error;
   }
   return response.json();
 }
@@ -1442,8 +1455,27 @@ function saveProjectFile() {
 
 // ───────────────────────────────────────────────────── load by link ──
 
+function showUrlGuidance(message, steps) {
+  const panel = $("url-guidance");
+  panel.querySelector(".guidance-lead").textContent = message;
+
+  const list = panel.querySelector(".guidance-steps");
+  list.replaceChildren();
+  for (const step of steps) {
+    const item = document.createElement("li");
+    item.textContent = step;
+    list.append(item);
+  }
+  panel.hidden = false;
+}
+
+function clearUrlGuidance() {
+  $("url-guidance").hidden = true;
+}
+
 async function loadFromUrl(url) {
   if (!url.trim()) return;
+  clearUrlGuidance();
   const button = $("url-go");
   button.disabled = true;
   $("dropzone").classList.add("busy");
@@ -1467,7 +1499,14 @@ async function loadFromUrl(url) {
     setStatus($("upload-status"), "");
     $("url-input").value = "";
   } catch (error) {
-    setStatus($("upload-status"), error.message, "error");
+    if (error.guidance) {
+      // The panel carries the refusal and the way round it, so the status line
+      // would only repeat itself in red.
+      setStatus($("upload-status"), "");
+      showUrlGuidance(error.message, error.guidance.steps);
+    } else {
+      setStatus($("upload-status"), error.message, "error");
+    }
   } finally {
     button.disabled = false;
     $("dropzone").classList.remove("busy");
@@ -1509,6 +1548,8 @@ function installUpload() {
     event.preventDefault();
     loadFromUrl($("url-input").value);
   });
+  // Advice about the last link is noise next to a different one.
+  $("url-input").addEventListener("input", clearUrlGuidance);
 
   $("transcribe").addEventListener("click", () => {
     if (state.pendingAudio) uploadFile(state.pendingAudio);

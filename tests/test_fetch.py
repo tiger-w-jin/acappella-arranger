@@ -17,7 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.analysis import analyze  # noqa: E402
 from app.export import to_melody_midi  # noqa: E402
-from app.ingest.fetch import FetchError, validate_url  # noqa: E402
+from app.ingest.fetch import (  # noqa: E402
+    FetchError,
+    StreamingSiteError,
+    _guidance_for,
+    validate_url,
+)
 from app.ingest.score import parse_score_file  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,13 +62,73 @@ def test_only_http_and_https_are_allowed(url):
     "https://music.youtube.com/watch?v=x", "https://open.spotify.com/track/x",
     "https://music.apple.com/us/song/x/1", "https://soundcloud.com/a/b",
     "https://www.bilibili.com/video/x", "https://y.qq.com/x",
+    # Subdomains of a listed host count too, and a host whose own entry is
+    # three labels deep must not be reduced to its last two and missed.
+    "https://www.y.qq.com/x", "https://music.163.com/song/x",
 ])
 def test_streaming_platforms_are_refused_with_a_reason(url):
     """The refusal should explain itself rather than look like a failure."""
-    with pytest.raises(FetchError) as caught:
+    with pytest.raises(StreamingSiteError) as caught:
         validate_url(url)
-    message = str(caught.value).lower()
-    assert "streaming" in message or "terms" in message
+    error = caught.value
+    # It names the site, so the refusal reads as deliberate rather than broken.
+    assert error.platform
+    assert error.platform.lower() in str(error).lower()
+    # And it never dead-ends: there is always at least the record-it route.
+    assert error.steps
+
+
+@pytest.mark.parametrize("host, expected", [
+    ("www.youtube.com", "YouTube"),
+    ("youtu.be", "YouTube"),
+    ("music.youtube.com", "YouTube"),
+    ("open.spotify.com", "Spotify"),
+    ("bandcamp.com", "Bandcamp"),
+    ("music.apple.com", "Apple Music"),
+    ("soundcloud.com", "SoundCloud"),
+    ("vimeo.com", "Vimeo"),
+    ("www.tidal.com", "TIDAL"),
+    ("music.163.com", "NetEase Music"),
+])
+def test_guidance_names_the_platform(host, expected):
+    platform, _ = _guidance_for(host)
+    assert platform == expected
+
+
+@pytest.mark.parametrize("host", sorted({
+    *(h for h in ("youtube.com", "youtu.be", "open.spotify.com", "bandcamp.com",
+                  "soundcloud.com", "music.apple.com", "vimeo.com", "tidal.com",
+                  "netflix.com", "tiktok.com", "instagram.com")),
+}))
+def test_every_refusal_offers_a_way_forward(host):
+    """A "no" with no route out is the failure this guidance exists to avoid."""
+    _, steps = _guidance_for(host)
+    assert len(steps) >= 2
+    assert all(step.strip() for step in steps)
+    # Recording it yourself works whatever the site, so it is always offered.
+    assert any("record" in step.lower() for step in steps)
+
+
+def test_sites_with_a_real_export_say_how_to_use_it():
+    """Where a legitimate download exists, the steps should point at it."""
+    _, youtube = _guidance_for("www.youtube.com")
+    assert any("studio" in step.lower() for step in youtube)
+
+    _, bandcamp = _guidance_for("bandcamp.com")
+    assert any("buy" in step.lower() for step in bandcamp)
+
+
+def test_streaming_only_sites_say_no_export_exists():
+    """Spotify has no file to give, and pretending otherwise wastes the user's time."""
+    platform, steps = _guidance_for("open.spotify.com")
+    assert platform == "Spotify"
+    assert any("no way to export" in step.lower() for step in steps)
+
+
+def test_an_unlisted_streaming_host_still_gets_the_universal_steps():
+    platform, steps = _guidance_for("mixcloud.com")
+    assert steps
+    assert any("record" in step.lower() for step in steps)
 
 
 @pytest.mark.parametrize("url", ["", "   ", "not a url", "http://", "https://"])
@@ -261,3 +326,31 @@ def test_fetch_endpoint_refuses_what_it_should():
         response = client.post("/api/fetch", json={"url": url})
         assert response.status_code == 400, url
         assert "Traceback" not in response.text
+
+
+def test_a_streaming_link_is_refused_with_steps_the_ui_can_show():
+    """The 400 carries the guidance as structure, not prose the UI must parse."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    body = client.post(
+        "/api/fetch", json={"url": "https://www.youtube.com/watch?v=x"}
+    ).json()["detail"]
+
+    assert body["platform"] == "YouTube"
+    assert isinstance(body["steps"], list) and body["steps"]
+    assert all(isinstance(step, str) and step.strip() for step in body["steps"])
+    assert "YouTube" in body["detail"]
+
+
+def test_an_ordinary_refusal_stays_a_plain_string():
+    """Only the guided refusal is structured; the UI still renders the rest."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    detail = client.post("/api/fetch", json={"url": "http://127.0.0.1/x.mp3"}).json()["detail"]
+    assert isinstance(detail, str)
