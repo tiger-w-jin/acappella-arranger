@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 import warnings
+from pathlib import Path
 
 import numpy as np
 
@@ -18,6 +20,14 @@ from ..theory import detect_key
 from .score import layout_bars
 
 AUDIO_SUFFIXES = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".aiff", ".aif", ".wma"}
+
+# Video containers people actually have a tune inside: a phone recording, a
+# screen capture, a rehearsal clip. libsndfile cannot open any of them, so the
+# audio track is extracted with ffmpeg first and the rest of the pipeline never
+# knows the difference.
+VIDEO_SUFFIXES = {".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".flv", ".wmv", ".3gp"}
+
+FFMPEG_TIMEOUT_SECONDS = 120
 
 # Intervals above a louder simultaneous note that mark a detection as an
 # overtone of that note rather than a real one.
@@ -28,7 +38,49 @@ _log = logging.getLogger(__name__)
 
 def is_audio_file(filename: str) -> bool:
     lowered = filename.lower()
-    return any(lowered.endswith(suffix) for suffix in AUDIO_SUFFIXES)
+    return any(lowered.endswith(s) for s in AUDIO_SUFFIXES | VIDEO_SUFFIXES)
+
+
+def is_video_file(filename: str) -> bool:
+    lowered = filename.lower()
+    return any(lowered.endswith(suffix) for suffix in VIDEO_SUFFIXES)
+
+
+def extract_audio_track(path: str) -> str:
+    """Pull the audio out of a video container into a temp WAV, via ffmpeg.
+
+    The arguments are passed as a list, never through a shell, so a filename
+    cannot smuggle in anything. The caller owns the returned file.
+    """
+    import shutil
+    import subprocess
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise ValueError(
+            "This looks like a video file, and extracting its audio needs ffmpeg, "
+            "which is not installed. Convert it to WAV or MP3 first."
+        )
+
+    handle, wav_path = tempfile.mkstemp(suffix=".wav")
+    os.close(handle)
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-v", "error", "-y", "-i", path,
+             "-vn", "-ac", "1", "-ar", "22050", "-f", "wav", wav_path],
+            capture_output=True, timeout=FFMPEG_TIMEOUT_SECONDS, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        Path(wav_path).unlink(missing_ok=True)
+        raise ValueError("Extracting audio from that video took too long; try a shorter clip.")
+
+    if result.returncode != 0 or not os.path.getsize(wav_path):
+        Path(wav_path).unlink(missing_ok=True)
+        detail = (result.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+        hint = detail[-1] if detail else "no audio track found"
+        raise ValueError(f"Could not read audio from that video: {hint}")
+
+    return wav_path
 
 
 def _predict(path: str):
@@ -273,6 +325,29 @@ def transcribe_audio(
     merge_repeats: bool = True,
 ) -> SourceScore:
     """Transcribe an audio file into a barred, quantized single-line melody."""
+    # A video container has to be unwrapped before anything can read it.
+    extracted: str | None = None
+    if is_video_file(path):
+        extracted = extract_audio_track(path)
+        path = extracted
+
+    try:
+        return _transcribe(
+            path, title_hint, beats, beat_type, grid, merge_repeats
+        )
+    finally:
+        if extracted:
+            Path(extracted).unlink(missing_ok=True)
+
+
+def _transcribe(
+    path: str,
+    title_hint: str,
+    beats: int,
+    beat_type: int,
+    grid: float,
+    merge_repeats: bool,
+) -> SourceScore:
     raw = _predict(path)
     total_detected = len(raw)
     if not raw:

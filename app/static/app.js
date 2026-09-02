@@ -30,7 +30,7 @@ const FALLBACK_COLOUR = "#7d8496";
 
 const ARRANGE_DEBOUNCE_MS = 450;
 const LYRICS_DEBOUNCE_MS = 700;
-const AUDIO_RE = /\.(wav|mp3|flac|ogg|m4a|aac|aiff|aif|wma)$/i;
+const AUDIO_RE = /\.(wav|mp3|flac|ogg|m4a|aac|aiff|aif|wma|mp4|m4v|mov|webm|mkv|avi|flv|wmv|3gp)$/i;
 
 // Loaded on demand the first time a PDF is exported, so the page does not pay
 // for a PDF library it may never use.
@@ -217,6 +217,9 @@ function chooseFile(file) {
   if (AUDIO_RE.test(file.name)) {
     state.pendingAudio = file;
     $("audio-filename").textContent = file.name;
+    $("audio-kind").textContent = /\.(mp4|m4v|mov|webm|mkv|avi|flv|wmv|3gp)$/i.test(file.name)
+      ? "is a video. Its audio track will be pulled out and transcribed."
+      : "is a recording. These decide how it gets transcribed.";
     $("audio-options").hidden = false;
     setStatus($("upload-status"), "");
     $("transcribe").focus();

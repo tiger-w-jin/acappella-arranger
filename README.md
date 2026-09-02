@@ -17,7 +17,8 @@ Everything runs locally. No audio, score or arrangement leaves the machine.
 
 **Two kinds of input.** Notated files (`.musicxml`, `.mxl`, `.xml`, `.mid`,
 `.midi`, `.abc`, `.krn`) are parsed directly. Audio (`.wav`, `.mp3`, `.flac`,
-`.m4a`, `.ogg`, …) is transcribed to a melody with Spotify's
+`.m4a`, `.ogg`, …) and video (`.mp4`, `.mov`, `.webm`, `.mkv`, …, whose audio
+track is pulled out with ffmpeg) are transcribed to a melody with Spotify's
 [basic-pitch](https://github.com/spotify/basic-pitch), beat-tracked with
 librosa, and quantized onto a bar grid. From there both paths are identical.
 
@@ -265,7 +266,7 @@ app/
     voicing.py       the voicing search and the non-search generators
     arranger.py      per-bar styles -> a complete multi-part arrangement
   static/            the web UI (no build step, vanilla JS)
-tests/               453 tests: pipeline, styles x ensembles, audio, commands,
+tests/               458 tests: pipeline, styles x ensembles, audio, commands,
                      lyrics, sources, robustness
 samples/             a melody, a 32-bar tune, a four-part chorale and a recording
 ```
@@ -326,6 +327,7 @@ reading it:
   conversion libraries come from a CDN. Everything else runs offline.
 - Audio transcription follows one melodic line. Dense mixes transcribe poorly —
   a solo voice or lead instrument works best.
+- Video input needs `ffmpeg` on PATH; without it the app says so rather than failing obscurely.
 - Time signature and pickup detection come from notated input only.
 - Tempo changes mid-piece are not followed; the first tempo applies throughout.
 - Pieces beyond 1000 bars are refused rather than accepted and left to crawl.

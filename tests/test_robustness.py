@@ -367,3 +367,75 @@ def test_a_hostile_title_is_never_reflected_as_markup(client):
     # The API may carry the text, but it must arrive as data, not as markup in
     # an HTML response. The front-end renders it with textContent.
     assert "<script>" not in client.get("/").text
+
+
+# ── Video containers ──────────────────────────────────────────────────────
+
+
+def test_video_extensions_are_accepted():
+    from app.ingest.audio import is_audio_file, is_video_file
+
+    for name in ("clip.mp4", "clip.MOV", "clip.webm", "clip.mkv"):
+        assert is_audio_file(name) and is_video_file(name)
+    assert not is_video_file("song.mp3")
+    assert is_audio_file("song.mp3")
+
+
+def _make_video(tmp_path, with_audio=True):
+    import shutil
+    import subprocess
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg not installed")
+    path = tmp_path / "clip.mp4"
+    args = [ffmpeg, "-v", "error", "-y"]
+    if with_audio:
+        args += ["-f", "lavfi", "-i", "sine=frequency=440:duration=2"]
+    args += ["-f", "lavfi", "-i", "color=c=black:s=160x120:d=2", "-shortest",
+             "-c:v", "libx264"]
+    if with_audio:
+        args += ["-c:a", "aac"]
+    args += [str(path)]
+    subprocess.run(args, check=True, capture_output=True, timeout=60)
+    return str(path)
+
+
+def test_audio_is_extracted_from_a_video(tmp_path):
+    """libsndfile cannot open an mp4, so the track has to come out first."""
+    from app.ingest.audio import extract_audio_track
+
+    import soundfile as sf
+
+    wav = extract_audio_track(_make_video(tmp_path))
+    try:
+        data, rate = sf.read(wav)
+        assert len(data) > 0 and rate == 22050
+    finally:
+        Path(wav).unlink(missing_ok=True)
+
+
+def test_a_video_with_no_audio_track_is_refused(tmp_path):
+    from app.ingest.audio import extract_audio_track
+
+    with pytest.raises(ValueError, match="audio"):
+        extract_audio_track(_make_video(tmp_path, with_audio=False))
+
+
+def test_a_file_that_is_not_really_a_video_is_refused(tmp_path):
+    from app.ingest.audio import extract_audio_track
+
+    fake = tmp_path / "fake.mp4"
+    fake.write_bytes(b"this is not a video")
+    with pytest.raises(ValueError, match="Could not read audio"):
+        extract_audio_track(str(fake))
+
+
+def test_upload_accepts_a_video(client, tmp_path):
+    with open(_make_video(tmp_path), "rb") as handle:
+        response = client.post(
+            "/api/upload", files={"file": ("clip.mp4", handle.read(), "video/mp4")}
+        )
+    # A steady sine has no melody to find, so 422 is the honest answer -- what
+    # matters is that it is no longer rejected as an unsupported type (415).
+    assert response.status_code != 415

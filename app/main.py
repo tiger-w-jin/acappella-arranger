@@ -22,7 +22,7 @@ from .commands import examples as command_examples, parse_command
 from .export import to_midi_bytes, to_musicxml, to_practice_midi
 from .harmony.arranger import build_arrangement
 from .harmony.styles import DEFAULT_STYLE, ENSEMBLES, STYLES, get_ensemble
-from .ingest.audio import AUDIO_SUFFIXES, is_audio_file, transcribe_audio
+from .ingest.audio import AUDIO_SUFFIXES, VIDEO_SUFFIXES, is_audio_file, transcribe_audio
 from .ingest.score import SCORE_SUFFIXES, is_score_file, parse_score_file
 from .models import (
     AnalysisResponse,
@@ -173,7 +173,7 @@ def catalog() -> dict:
         "lyric_languages": available_languages(),
         "llm_enabled": llm.is_available(),
         "accepted_score": sorted(SCORE_SUFFIXES),
-        "accepted_audio": sorted(AUDIO_SUFFIXES),
+        "accepted_audio": sorted(AUDIO_SUFFIXES | VIDEO_SUFFIXES),
     }
 
 
@@ -253,8 +253,9 @@ async def upload(
         raise HTTPException(
             415,
             f"Unsupported file type '{suffix or filename}'. Upload a score "
-            f"({', '.join(sorted(SCORE_SUFFIXES))}) or audio "
-            f"({', '.join(sorted(AUDIO_SUFFIXES))}).",
+            f"({', '.join(sorted(SCORE_SUFFIXES))}), audio "
+            f"({', '.join(sorted(AUDIO_SUFFIXES))}) or video "
+            f"({', '.join(sorted(VIDEO_SUFFIXES))}).",
         )
 
     handle, temp_path = tempfile.mkstemp(suffix=suffix)
